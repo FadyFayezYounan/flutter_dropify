@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
@@ -29,11 +31,15 @@ class DropifyBuilder<T> extends StatefulWidget {
     this.itemBuilder,
     this.selectedBuilder,
     this.selectedItemsBuilder,
+    this.loadingBuilder,
     this.emptyBuilder,
+    this.errorBuilder,
     this.dataBuilder,
     this.overlayBuilder,
     this.menuHeaderBuilder,
     this.menuFooterBuilder,
+    this.searchDebounceDuration = const Duration(milliseconds: 300),
+    this.onError,
   });
 
   /// Static item source for this slice.
@@ -87,6 +93,12 @@ class DropifyBuilder<T> extends StatefulWidget {
   /// Custom empty state builder.
   final DropifyEmptyBuilder? emptyBuilder;
 
+  /// Custom loading state builder.
+  final DropifyLoadingBuilder? loadingBuilder;
+
+  /// Custom error state builder.
+  final DropifyErrorBuilder? errorBuilder;
+
   /// Advanced data body builder.
   final DropifyDataBuilder<T>? dataBuilder;
 
@@ -98,6 +110,12 @@ class DropifyBuilder<T> extends StatefulWidget {
 
   /// Optional menu footer builder.
   final DropifyMenuBuilder? menuFooterBuilder;
+
+  /// Debounce duration for async search loads.
+  final Duration searchDebounceDuration;
+
+  /// Called when an async loader fails.
+  final void Function(Object error, StackTrace stackTrace)? onError;
 
   @override
   State<DropifyBuilder<T>> createState() => _DropifyBuilderState<T>();
@@ -112,6 +130,12 @@ class DropifyBuilder<T> extends StatefulWidget {
     properties.add(StringProperty('placeholder', placeholder));
     properties.add(StringProperty('searchHintText', searchHintText));
     properties.add(StringProperty('emptyText', emptyText));
+    properties.add(
+      DiagnosticsProperty<Duration>(
+        'searchDebounceDuration',
+        searchDebounceDuration,
+      ),
+    );
     properties.add(
       ObjectFlagProperty<ValueChanged<T?>?>.has('onChanged', onChanged),
     );
@@ -128,6 +152,17 @@ class _DropifyBuilderState<T> extends State<DropifyBuilder<T>> {
   late final MenuController _menuController;
   late final TextEditingController _searchController;
   late final FocusNode _searchFocusNode;
+  final Map<T, DropifyItem<T>> _knownItemsByValue = <T, DropifyItem<T>>{};
+  Timer? _searchDebounceTimer;
+  var _asyncItems = <DropifyItem<T>>[];
+  var _isLoading = false;
+  var _hasLoadedAsyncItems = false;
+  var _requestSerial = 0;
+  Object? _loadError;
+  StackTrace? _loadStackTrace;
+  DropifyQuery? _loadingQuery;
+  DropifyQuery? _failedQuery;
+  var _suppressSearchListener = false;
   bool _isOpen = false;
 
   bool get _canInteract {
@@ -140,13 +175,23 @@ class _DropifyBuilderState<T> extends State<DropifyBuilder<T>> {
   DropifyQuery get _query => DropifyQuery.fromRaw(_searchController.text);
 
   List<DropifyItem<T>> get _visibleItems {
+    if (widget.source.isAsync) {
+      assert(debugAssertUniqueDropifyIdentities(_asyncItems));
+      return List<DropifyItem<T>>.unmodifiable(_asyncItems);
+    }
     final items = widget.source.resolve(_query);
     assert(debugAssertUniqueDropifyIdentities(items));
     return items;
   }
 
+  Iterable<DropifyItem<T>> get _availableItems {
+    return widget.source.isAsync
+        ? _knownItemsByValue.values
+        : widget.source.items;
+  }
+
   DropifyItem<T>? get _selectedItem {
-    for (final item in widget.source.items) {
+    for (final item in _availableItems) {
       if (item.value == widget.value) {
         return item;
       }
@@ -156,7 +201,7 @@ class _DropifyBuilderState<T> extends State<DropifyBuilder<T>> {
 
   List<DropifyItem<T>> get _selectedItems {
     final selected = <DropifyItem<T>>[];
-    for (final item in widget.source.items) {
+    for (final item in _availableItems) {
       if (widget.values.contains(item.value)) {
         selected.add(item);
       }
@@ -167,8 +212,13 @@ class _DropifyBuilderState<T> extends State<DropifyBuilder<T>> {
   @override
   void initState() {
     super.initState();
+    assert(
+      !widget.searchDebounceDuration.isNegative,
+      'Dropify searchDebounceDuration must not be negative.',
+    );
     _menuController = MenuController();
     _searchController = TextEditingController();
+    _searchController.addListener(_handleSearchTextChanged);
     _searchFocusNode = FocusNode();
     widget.controller?.addListener(_handleControllerCommand);
   }
@@ -183,12 +233,17 @@ class _DropifyBuilderState<T> extends State<DropifyBuilder<T>> {
     if (!_canInteract && _isOpen) {
       _close();
     }
+    if (oldWidget.source != widget.source && widget.source.isAsync && _isOpen) {
+      _loadAsyncItems(_query);
+    }
   }
 
   @override
   void dispose() {
     widget.controller?.removeListener(_handleControllerCommand);
+    _searchDebounceTimer?.cancel();
     _searchFocusNode.dispose();
+    _searchController.removeListener(_handleSearchTextChanged);
     _searchController.dispose();
     super.dispose();
   }
@@ -205,7 +260,13 @@ class _DropifyBuilderState<T> extends State<DropifyBuilder<T>> {
       case DropifyControllerCommand.search:
         _setSearchText(widget.controller?.takePendingSearchText() ?? '');
       case DropifyControllerCommand.refresh:
+        if (widget.source.isAsync) {
+          _loadAsyncItems(_query);
+        }
       case DropifyControllerCommand.retry:
+        if (widget.source.isAsync) {
+          _retryAsyncLoad();
+        }
       case null:
         break;
     }
@@ -234,6 +295,9 @@ class _DropifyBuilderState<T> extends State<DropifyBuilder<T>> {
     setState(() {
       _isOpen = true;
     });
+    if (widget.source.isAsync && !_hasLoadedAsyncItems && !_isLoading) {
+      _loadAsyncItems(_query);
+    }
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted && _isOpen) {
         _searchFocusNode.requestFocus();
@@ -242,21 +306,109 @@ class _DropifyBuilderState<T> extends State<DropifyBuilder<T>> {
   }
 
   void _handleClose() {
+    _searchDebounceTimer?.cancel();
+    if (widget.source.isAsync) {
+      _requestSerial++;
+    }
     setState(() {
       _isOpen = false;
       _setSearchText('', notify: false);
     });
   }
 
+  void _handleSearchTextChanged() {
+    if (_suppressSearchListener) {
+      return;
+    }
+    if (widget.source.isAsync && _isOpen) {
+      setState(() {});
+      _scheduleAsyncSearch();
+      return;
+    }
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
   void _setSearchText(String text, {bool notify = true}) {
     if (_searchController.text == text) {
       return;
     }
+    _suppressSearchListener = !notify;
     _searchController.text = text;
     _searchController.selection = TextSelection.collapsed(offset: text.length);
+    _suppressSearchListener = false;
     if (notify && mounted) {
       setState(() {});
+      if (widget.source.isAsync && _isOpen) {
+        _scheduleAsyncSearch();
+      }
     }
+  }
+
+  void _scheduleAsyncSearch() {
+    _searchDebounceTimer?.cancel();
+    _searchDebounceTimer = Timer(widget.searchDebounceDuration, () {
+      if (mounted && _isOpen) {
+        _loadAsyncItems(_query);
+      }
+    });
+  }
+
+  Future<void> _loadAsyncItems(DropifyQuery query) async {
+    final loader = widget.source.asyncLoader;
+    if (loader == null) {
+      return;
+    }
+    if (_isLoading && _loadingQuery == query) {
+      return;
+    }
+
+    _searchDebounceTimer?.cancel();
+    final requestId = ++_requestSerial;
+    setState(() {
+      _isLoading = true;
+      _loadError = null;
+      _loadStackTrace = null;
+      _loadingQuery = query;
+      _failedQuery = null;
+    });
+
+    try {
+      final items = await Future<List<DropifyItem<T>>>.sync(
+        () => loader(query),
+      );
+      if (!mounted || requestId != _requestSerial || !_isOpen) {
+        return;
+      }
+      assert(debugAssertUniqueDropifyIdentities(items));
+      for (final item in items) {
+        _knownItemsByValue[item.value] = item;
+      }
+      setState(() {
+        _asyncItems = List<DropifyItem<T>>.unmodifiable(items);
+        _isLoading = false;
+        _hasLoadedAsyncItems = true;
+        _loadingQuery = null;
+      });
+    } catch (error, stackTrace) {
+      if (!mounted || requestId != _requestSerial || !_isOpen) {
+        return;
+      }
+      widget.onError?.call(error, stackTrace);
+      setState(() {
+        _isLoading = false;
+        _hasLoadedAsyncItems = true;
+        _loadingQuery = null;
+        _loadError = error;
+        _loadStackTrace = stackTrace;
+        _failedQuery = query;
+      });
+    }
+  }
+
+  void _retryAsyncLoad() {
+    _loadAsyncItems(_failedQuery ?? _query);
   }
 
   void _selectItem(DropifyItem<T> item) {
@@ -469,7 +621,6 @@ class _DropifyBuilderState<T> extends State<DropifyBuilder<T>> {
           isDense: true,
           border: const OutlineInputBorder(),
         ),
-        onChanged: (_) => setState(() {}),
       ),
     );
   }
@@ -501,6 +652,49 @@ class _DropifyBuilderState<T> extends State<DropifyBuilder<T>> {
     DropifyQuery query,
   ) {
     final customDataBuilder = widget.dataBuilder;
+    final error = _loadError;
+    final stackTrace = _loadStackTrace;
+    if (_isLoading && widget.source.isAsync) {
+      final customLoadingBuilder = widget.loadingBuilder;
+      return Padding(
+        key: DropifyKeys.loadingRow,
+        padding: const EdgeInsets.all(16),
+        child:
+            customLoadingBuilder?.call(
+              context,
+              DropifyLoadingState(query: query),
+            ) ??
+            const Text('Loading options...'),
+      );
+    }
+    if (error != null && stackTrace != null && widget.source.isAsync) {
+      final customErrorBuilder = widget.errorBuilder;
+      return Padding(
+        key: DropifyKeys.errorRow,
+        padding: const EdgeInsets.all(16),
+        child:
+            customErrorBuilder?.call(
+              context,
+              DropifyErrorState(
+                query: _failedQuery ?? query,
+                error: error,
+                stackTrace: stackTrace,
+                retry: _retryAsyncLoad,
+              ),
+            ) ??
+            Column(
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                const Text('Could not load options'),
+                TextButton(
+                  key: DropifyKeys.retryButton,
+                  onPressed: _retryAsyncLoad,
+                  child: const Text('Retry'),
+                ),
+              ],
+            ),
+      );
+    }
     if (customDataBuilder != null && visibleItems.isNotEmpty) {
       return Flexible(
         child: customDataBuilder(

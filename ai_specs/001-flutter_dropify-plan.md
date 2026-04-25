@@ -35,21 +35,21 @@ Production `flutter_dropify` package. Builder-first core, typed convenience widg
 - [x] Robot journey tests + selectors/seams: static select and static multi using `DropifyKeys.field`, `.searchInput`, item rows, clear/select-all
 - [x] Verify: `flutter analyze` && `flutter test`
 
-### Phase 2: Async Slice
+### Phase 2: Async Slice (Complete)
 
 - **Goal**: async loading, search, errors, stale-response safety
-- [ ] `lib/src/dropify_source.dart` - async source/loader typedefs, `DropifyQuery` plumbing
-- [ ] `lib/src/dropify_async_dropdown.dart` - `DropifyAsyncDropdown<T>` and `.multi`
-- [ ] `lib/src/dropify_builder.dart` - loading, error, retry, debounce, latest-response-wins, dispose guards
-- [ ] `lib/src/dropify_controller.dart` - refresh/retry wiring to current source/query
-- [ ] `lib/src/dropify_builders.dart` - loading/error builder state + retry callback
-- [ ] `test/flutter_dropify_test.dart` - async widget tests with fake loaders/completers
-- [ ] TDD: first open shows loading, renders latest loaded items, selects enabled item
-- [ ] TDD: first-load error shows error UI, calls `onError`, retry succeeds, menu stays open
-- [ ] TDD: debounced search reloads query, stale completions ignored, sync throws treated as loader errors
-- [ ] TDD: async multi selections persist across reload/search/error/retry
-- [ ] Robot journey tests + selectors/seams: async fail, retry, search, select; fake loader + controllable completers
-- [ ] Verify: `flutter analyze` && `flutter test`
+- [x] `lib/src/dropify_source.dart` - async source/loader typedefs, `DropifyQuery` plumbing
+- [x] `lib/src/dropify_async_dropdown.dart` - `DropifyAsyncDropdown<T>` and `.multi`
+- [x] `lib/src/dropify_builder.dart` - loading, error, retry, debounce, latest-response-wins, dispose guards
+- [x] `lib/src/dropify_controller.dart` - refresh/retry wiring to current source/query
+- [x] `lib/src/dropify_builders.dart` - loading/error builder state + retry callback
+- [x] `test/flutter_dropify_test.dart` - async widget tests with fake loaders/completers
+- [x] TDD: first open shows loading, renders latest loaded items, selects enabled item
+- [x] TDD: first-load error shows error UI, calls `onError`, retry succeeds, menu stays open
+- [x] TDD: debounced search reloads query, stale completions ignored, sync throws treated as loader errors
+- [x] TDD: async multi selections persist across reload/search/error/retry
+- [x] Robot journey tests + selectors/seams: async fail, retry, search, select; fake loader + controllable completers
+- [x] Verify: `flutter analyze` && `flutter test`
 
 ### Phase 3: Paginated Slice
 

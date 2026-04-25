@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_dropify/flutter_dropify.dart';
@@ -215,6 +217,206 @@ void main() {
     );
     expect(itemStates.every((state) => !state.isHighlighted), isTrue);
   });
+
+  testWidgets(
+    'async first open shows loading, renders latest loaded items, selects enabled item',
+    (tester) async {
+      final completer = Completer<List<DropifyItem<String>>>();
+      String? changed;
+      await tester.pumpWidget(
+        _Harness(
+          child: DropifyAsyncDropdown<String>(
+            value: null,
+            loader: (_) => completer.future,
+            onChanged: (value) => changed = value,
+          ),
+        ),
+      );
+      final robot = _DropifyRobot(tester);
+
+      await robot.open();
+      expect(find.byKey(DropifyKeys.loadingRow), findsOneWidget);
+
+      completer.complete(items);
+      await tester.pumpAndSettle();
+      expect(find.byKey(DropifyKeys.loadingRow), findsNothing);
+      expect(find.text('France'), findsOneWidget);
+
+      await robot.selectItem('fr');
+      expect(changed, 'fr');
+      expect(find.byKey(DropifyKeys.menuOverlay), findsNothing);
+    },
+  );
+
+  testWidgets(
+    'async first-load error shows error UI, calls onError, retry succeeds, menu stays open',
+    (tester) async {
+      final firstLoad = Completer<List<DropifyItem<String>>>();
+      final retryLoad = Completer<List<DropifyItem<String>>>();
+      final loads = <Completer<List<DropifyItem<String>>>>[
+        firstLoad,
+        retryLoad,
+      ];
+      Object? reportedError;
+      await tester.pumpWidget(
+        _Harness(
+          child: DropifyAsyncDropdown<String>(
+            value: null,
+            loader: (_) => loads.removeAt(0).future,
+            onChanged: (_) {},
+            onError: (error, _) => reportedError = error,
+          ),
+        ),
+      );
+      final robot = _DropifyRobot(tester);
+
+      await robot.open();
+      expect(find.byKey(DropifyKeys.loadingRow), findsOneWidget);
+      final error = StateError('network failed');
+      firstLoad.completeError(error, StackTrace.current);
+      await tester.pump();
+      await tester.pump();
+
+      expect(find.byKey(DropifyKeys.errorRow), findsOneWidget);
+      expect(find.byKey(DropifyKeys.menuOverlay), findsOneWidget);
+      expect(reportedError, same(error));
+
+      await robot.retry();
+      expect(find.byKey(DropifyKeys.loadingRow), findsOneWidget);
+      retryLoad.complete(items);
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(DropifyKeys.errorRow), findsNothing);
+      expect(find.text('Egypt'), findsOneWidget);
+      expect(find.byKey(DropifyKeys.menuOverlay), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'async debounced search reloads query, ignores stale completions, and treats sync throws as loader errors',
+    (tester) async {
+      final requests = <String, Completer<List<DropifyItem<String>>>>{};
+      final queries = <String>[];
+      Object? reportedError;
+      await tester.pumpWidget(
+        _Harness(
+          child: DropifyAsyncDropdown<String>(
+            value: null,
+            loader: (query) {
+              queries.add(query.normalizedText);
+              if (query.normalizedText == 'boom') {
+                throw StateError('sync failed');
+              }
+              final completer = Completer<List<DropifyItem<String>>>();
+              requests[query.normalizedText] = completer;
+              return completer.future;
+            },
+            searchDebounceDuration: const Duration(milliseconds: 20),
+            onChanged: (_) {},
+            onError: (error, _) => reportedError = error,
+          ),
+        ),
+      );
+      final robot = _DropifyRobot(tester);
+
+      await robot.open();
+      requests['']!.complete(items);
+      await tester.pumpAndSettle();
+
+      await tester.enterText(find.byKey(DropifyKeys.searchInput), 'fra');
+      await tester.pump(const Duration(milliseconds: 10));
+      expect(requests.containsKey('fra'), isFalse);
+      await tester.pump(const Duration(milliseconds: 20));
+      expect(requests.containsKey('fra'), isTrue);
+
+      await tester.enterText(find.byKey(DropifyKeys.searchInput), 'jap');
+      await tester.pump(const Duration(milliseconds: 20));
+      requests['jap']!.complete(<DropifyItem<String>>[items.last]);
+      await tester.pumpAndSettle();
+      requests['fra']!.complete(<DropifyItem<String>>[items[1]]);
+      await tester.pumpAndSettle();
+
+      expect(queries, containsAllInOrder(<String>['', 'fra', 'jap']));
+      expect(find.text('Japan'), findsOneWidget);
+      expect(find.text('France'), findsNothing);
+
+      await tester.enterText(find.byKey(DropifyKeys.searchInput), 'boom');
+      await tester.pump(const Duration(milliseconds: 20));
+      await tester.pump();
+
+      expect(find.byKey(DropifyKeys.errorRow), findsOneWidget);
+      expect(reportedError, isA<StateError>());
+    },
+  );
+
+  testWidgets(
+    'async multi selections persist across reload, search, error, and retry',
+    (tester) async {
+      final requests = <String, List<Completer<List<DropifyItem<String>>>>>{};
+      final controller = DropifyController();
+      var values = <String>[];
+      await tester.pumpWidget(
+        _Harness(
+          child: StatefulBuilder(
+            builder: (context, setState) {
+              return DropifyAsyncDropdown<String>.multi(
+                values: values,
+                controller: controller,
+                loader: (query) {
+                  final completer = Completer<List<DropifyItem<String>>>();
+                  requests
+                      .putIfAbsent(
+                        query.normalizedText,
+                        () => <Completer<List<DropifyItem<String>>>>[],
+                      )
+                      .add(completer);
+                  return completer.future;
+                },
+                searchDebounceDuration: const Duration(milliseconds: 10),
+                onChanged: (nextValues) {
+                  setState(() => values = nextValues);
+                },
+              );
+            },
+          ),
+        ),
+      );
+      final robot = _DropifyRobot(tester);
+
+      await robot.open();
+      requests['']!.single.complete(items);
+      await tester.pumpAndSettle();
+      await robot.selectItem('eg');
+
+      await tester.enterText(find.byKey(DropifyKeys.searchInput), 'jap');
+      await tester.pump(const Duration(milliseconds: 10));
+      requests['jap']!.single.complete(<DropifyItem<String>>[items.last]);
+      await tester.pumpAndSettle();
+      await robot.selectItem('jp');
+
+      await tester.enterText(find.byKey(DropifyKeys.searchInput), 'err');
+      await tester.pump(const Duration(milliseconds: 10));
+      requests['err']!.first.completeError(
+        StateError('failed'),
+        StackTrace.current,
+      );
+      await tester.pump();
+      await tester.pump();
+
+      expect(find.byKey(DropifyKeys.errorRow), findsOneWidget);
+      expect(values, <String>['eg', 'jp']);
+
+      controller.retry();
+      await tester.pump();
+      requests['err']!.last.complete(<DropifyItem<String>>[items[1]]);
+      await tester.pumpAndSettle();
+
+      expect(values, <String>['eg', 'jp']);
+      expect(find.byKey(DropifyKeys.selectedChip('eg')), findsOneWidget);
+      expect(find.byKey(DropifyKeys.selectedChip('jp')), findsOneWidget);
+      expect(find.text('France'), findsOneWidget);
+    },
+  );
 }
 
 class _Harness extends StatelessWidget {
@@ -259,6 +461,11 @@ class _DropifyRobot {
 
   Future<void> selectVisible() async {
     await tester.tap(find.byKey(DropifyKeys.selectAll));
+    await tester.pumpAndSettle();
+  }
+
+  Future<void> retry() async {
+    await tester.tap(find.byKey(DropifyKeys.retryButton));
     await tester.pumpAndSettle();
   }
 }

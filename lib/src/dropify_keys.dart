@@ -20,6 +20,15 @@ abstract final class DropifyKeys {
   /// Empty row selector.
   static const Key emptyRow = ValueKey<String>('dropify.emptyRow');
 
+  /// Loading row selector.
+  static const Key loadingRow = ValueKey<String>('dropify.loadingRow');
+
+  /// Error row selector.
+  static const Key errorRow = ValueKey<String>('dropify.errorRow');
+
+  /// Retry button selector.
+  static const Key retryButton = ValueKey<String>('dropify.retryButton');
+
   /// Returns an item-row selector for [identity].
   static Key itemRow(Object? identity) {
     return ValueKey<String>('dropify.itemRow.$identity');

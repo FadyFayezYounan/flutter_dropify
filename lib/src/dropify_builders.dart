@@ -27,6 +27,14 @@ typedef DropifySelectedItemsBuilder<T> =
 typedef DropifyEmptyBuilder =
     Widget Function(BuildContext context, DropifyEmptyState state);
 
+/// Builds a loading menu state.
+typedef DropifyLoadingBuilder =
+    Widget Function(BuildContext context, DropifyLoadingState state);
+
+/// Builds an error menu state.
+typedef DropifyErrorBuilder =
+    Widget Function(BuildContext context, DropifyErrorState state);
+
 /// Builds an advanced replacement for the data menu body.
 typedef DropifyDataBuilder<T> =
     Widget Function(BuildContext context, DropifyDataState<T> state);
@@ -170,6 +178,40 @@ class DropifyEmptyState {
 
   /// Current query for the empty state.
   final DropifyQuery query;
+}
+
+/// State passed to [DropifyLoadingBuilder].
+@immutable
+class DropifyLoadingState {
+  /// Creates a [DropifyLoadingState].
+  const DropifyLoadingState({required this.query});
+
+  /// Current query for the loading state.
+  final DropifyQuery query;
+}
+
+/// State passed to [DropifyErrorBuilder].
+@immutable
+class DropifyErrorState {
+  /// Creates a [DropifyErrorState].
+  const DropifyErrorState({
+    required this.query,
+    required this.error,
+    required this.stackTrace,
+    required this.retry,
+  });
+
+  /// Current query for the failed load.
+  final DropifyQuery query;
+
+  /// Error thrown by the loader.
+  final Object error;
+
+  /// Stack trace captured with [error].
+  final StackTrace stackTrace;
+
+  /// Retries the failed load.
+  final VoidCallback retry;
 }
 
 /// State passed to [DropifyDataBuilder].

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 
 import 'dropify_item.dart';
@@ -7,17 +9,34 @@ import 'dropify_query.dart';
 typedef DropifyFilter<T> =
     bool Function(DropifyItem<T> item, DropifyQuery query);
 
+/// Loads async Dropify items for a [query].
+typedef DropifyAsyncLoader<T> =
+    FutureOr<List<DropifyItem<T>>> Function(DropifyQuery query);
+
 /// Provides static Dropify items.
 @immutable
 class DropifySource<T> {
   /// Creates a static [DropifySource].
-  const DropifySource.static({required this.items, this.filter});
+  const DropifySource.static({required this.items, this.filter})
+    : asyncLoader = null;
+
+  /// Creates an async [DropifySource].
+  const DropifySource.async({required DropifyAsyncLoader<T> loader})
+    : items = const [],
+      filter = null,
+      asyncLoader = loader;
 
   /// Items available to the dropdown.
   final List<DropifyItem<T>> items;
 
   /// Optional custom filter callback.
   final DropifyFilter<T>? filter;
+
+  /// Optional async item loader.
+  final DropifyAsyncLoader<T>? asyncLoader;
+
+  /// Whether this source loads items asynchronously.
+  bool get isAsync => asyncLoader != null;
 
   /// Resolves visible items for [query].
   List<DropifyItem<T>> resolve(DropifyQuery query) {
