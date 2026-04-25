@@ -3,20 +3,21 @@ import 'package:flutter/widgets.dart';
 
 import 'dropify_controller.dart';
 import 'dropify_field.dart';
-import 'dropify_item.dart';
 import 'dropify_keys.dart';
 import 'dropify_source.dart';
 import 'dropify_theme.dart';
 
-/// A static, searchable, single-select Dropify dropdown.
-class DropifyDropdown<T> extends StatelessWidget {
-  /// Creates a static single-select dropdown.
-  const DropifyDropdown({
+/// A searchable, async, single-select Dropify dropdown.
+class DropifyAsyncDropdown<T> extends StatelessWidget {
+  /// Creates an async single-select dropdown.
+  const DropifyAsyncDropdown({
     super.key,
-    required this.items,
+    required this.loader,
     required this.value,
     required this.onChanged,
     this.controller,
+    this.onError,
+    this.debounceDuration = const Duration(milliseconds: 300),
     this.enabled = true,
     this.hintText,
     this.emptyText,
@@ -24,8 +25,8 @@ class DropifyDropdown<T> extends StatelessWidget {
     this.theme,
   });
 
-  /// Static items shown by the dropdown.
-  final List<DropifyItem<T>> items;
+  /// Loads items for the current query.
+  final DropifyAsyncItemsLoader<T> loader;
 
   /// Controlled selected value.
   final T? value;
@@ -33,8 +34,14 @@ class DropifyDropdown<T> extends StatelessWidget {
   /// Called when the selected value changes.
   final ValueChanged<T?> onChanged;
 
-  /// Optional controller for open, close, and clear-search commands.
+  /// Optional controller for open, close, clear, refresh, and retry commands.
   final DropifyController? controller;
+
+  /// Called when [loader] throws.
+  final DropifyErrorCallback? onError;
+
+  /// Delay applied before search reloads.
+  final Duration debounceDuration;
 
   /// Whether the dropdown can be opened.
   final bool enabled;
@@ -54,13 +61,21 @@ class DropifyDropdown<T> extends StatelessWidget {
   @override
   void debugFillProperties(DiagnosticPropertiesBuilder properties) {
     super.debugFillProperties(properties);
-    properties.add(IterableProperty<DropifyItem<T>>('items', items));
+    properties.add(
+      ObjectFlagProperty<DropifyAsyncItemsLoader<T>>.has('loader', loader),
+    );
     properties.add(DiagnosticsProperty<T?>('value', value, defaultValue: null));
     properties.add(
       ObjectFlagProperty<ValueChanged<T?>>.has('onChanged', onChanged),
     );
     properties.add(
       DiagnosticsProperty<DropifyController?>('controller', controller),
+    );
+    properties.add(
+      ObjectFlagProperty<DropifyErrorCallback?>.has('onError', onError),
+    );
+    properties.add(
+      DiagnosticsProperty<Duration>('debounceDuration', debounceDuration),
     );
     properties.add(
       FlagProperty('enabled', value: enabled, ifFalse: 'disabled'),
@@ -74,10 +89,14 @@ class DropifyDropdown<T> extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return DropifyField<T>(
-      source: DropifySource<T>.static(items: items),
+      source: DropifySource<T>.async(
+        loader: loader,
+        debounceDuration: debounceDuration,
+      ),
       value: value,
       onChanged: onChanged,
       controller: controller,
+      onError: onError,
       enabled: enabled,
       hintText: hintText,
       emptyText: emptyText,

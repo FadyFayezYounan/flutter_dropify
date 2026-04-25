@@ -32,19 +32,19 @@ Production v0.1 Dropify package. Typed dropdown core, thin convenience widgets, 
 - [x] Robot journey tests + selectors/seams for static select: field, search input, menu, item row, empty row
 - [x] Verify: `flutter analyze` && `flutter test`
 
-### Phase 2: Async Source
+### Phase 2: Async Source (Complete)
 
 - **Goal**: async open/search/retry with latest-response-wins
-- [ ] `lib/src/dropify_source.dart` - async source, loader/query callbacks, debounce config
-- [ ] `lib/src/dropify_controller.dart` - open/close, clear search, refresh, retry interaction API
-- [ ] `lib/src/dropify_field.dart` - loading/error/retry/empty async states, stale result guards, dispose guards
-- [ ] `lib/src/dropify_async_dropdown.dart` - thin async single-select wrapper
-- [ ] `lib/src/widgets/` - loading row, error row, retry button keys
-- [ ] TDD: initial async success shows loading then items -> implement loader state
-- [ ] TDD: loader throw shows error, calls `onError`, retry reloads same query -> implement error path
-- [ ] TDD: debounced search ignores stale older completion -> implement request tokens/debounce seam
-- [ ] Robot journey tests + selectors/seams for async retry then select: fake loader, zero debounce, retry key
-- [ ] Verify: `flutter analyze` && `flutter test`
+- [x] `lib/src/dropify_source.dart` - async source, loader/query callbacks, debounce config
+- [x] `lib/src/dropify_controller.dart` - open/close, clear search, refresh, retry interaction API
+- [x] `lib/src/dropify_field.dart` - loading/error/retry/empty async states, stale result guards, dispose guards
+- [x] `lib/src/dropify_async_dropdown.dart` - thin async single-select wrapper
+- [x] `lib/src/widgets/` - loading row, error row, retry button keys
+- [x] TDD: initial async success shows loading then items -> implement loader state
+- [x] TDD: loader throw shows error, calls `onError`, retry reloads same query -> implement error path
+- [x] TDD: debounced search ignores stale older completion -> implement request tokens/debounce seam
+- [x] Robot journey tests + selectors/seams for async retry then select: fake loader, zero debounce, retry key
+- [x] Verify: `flutter analyze` && `flutter test`
 
 ### Phase 3: Pagination
 

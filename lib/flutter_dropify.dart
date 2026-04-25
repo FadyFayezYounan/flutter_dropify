@@ -1,3 +1,5 @@
+export 'src/dropify_async_dropdown.dart';
+export 'src/dropify_controller.dart';
 export 'src/dropify_dropdown.dart';
 export 'src/dropify_field.dart';
 export 'src/dropify_item.dart';

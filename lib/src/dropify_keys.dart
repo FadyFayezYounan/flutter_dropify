@@ -24,6 +24,16 @@ class DropifyKeys {
   /// Key for the empty-state row.
   ValueKey<String> get emptyRow => ValueKey<String>('$namespace.emptyRow');
 
+  /// Key for the async loading row.
+  ValueKey<String> get loadingRow => ValueKey<String>('$namespace.loadingRow');
+
+  /// Key for the async error row.
+  ValueKey<String> get errorRow => ValueKey<String>('$namespace.errorRow');
+
+  /// Key for the retry button shown after async errors.
+  ValueKey<String> get retryButton =>
+      ValueKey<String>('$namespace.retryButton');
+
   /// Returns the key for an item row.
   ValueKey<String> item(Object? value) {
     return ValueKey<String>('$namespace.item.$value');
