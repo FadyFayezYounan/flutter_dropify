@@ -2,11 +2,13 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:infinite_scroll_pagination/infinite_scroll_pagination.dart';
 
 import 'dropify_builders.dart';
 import 'dropify_controller.dart';
 import 'dropify_item.dart';
 import 'dropify_keys.dart';
+import 'dropify_pagination.dart';
 import 'dropify_query.dart';
 import 'dropify_source.dart';
 
@@ -40,6 +42,9 @@ class DropifyBuilder<T> extends StatefulWidget {
     this.menuFooterBuilder,
     this.searchDebounceDuration = const Duration(milliseconds: 300),
     this.onError,
+    this.loadMoreBuilder,
+    this.loadMoreErrorBuilder,
+    this.noMoreItemsBuilder,
   });
 
   /// Static item source for this slice.
@@ -117,6 +122,15 @@ class DropifyBuilder<T> extends StatefulWidget {
   /// Called when an async loader fails.
   final void Function(Object error, StackTrace stackTrace)? onError;
 
+  /// Custom paginated load-more state builder.
+  final DropifyLoadMoreBuilder? loadMoreBuilder;
+
+  /// Custom paginated load-more error builder.
+  final DropifyLoadMoreErrorBuilder? loadMoreErrorBuilder;
+
+  /// Custom paginated end-of-list builder.
+  final DropifyNoMoreItemsBuilder? noMoreItemsBuilder;
+
   @override
   State<DropifyBuilder<T>> createState() => _DropifyBuilderState<T>();
 
@@ -152,8 +166,14 @@ class _DropifyBuilderState<T> extends State<DropifyBuilder<T>> {
   late final MenuController _menuController;
   late final TextEditingController _searchController;
   late final FocusNode _searchFocusNode;
+  late final ScrollController _pagingScrollController;
   final Map<T, DropifyItem<T>> _knownItemsByValue = <T, DropifyItem<T>>{};
   Timer? _searchDebounceTimer;
+  PagingState<Object?, DropifyItem<T>> _pagingState = PagingState(
+    hasNextPage: true,
+    isLoading: false,
+  );
+  Object? _nextPageKey;
   var _asyncItems = <DropifyItem<T>>[];
   var _isLoading = false;
   var _hasLoadedAsyncItems = false;
@@ -162,7 +182,10 @@ class _DropifyBuilderState<T> extends State<DropifyBuilder<T>> {
   StackTrace? _loadStackTrace;
   DropifyQuery? _loadingQuery;
   DropifyQuery? _failedQuery;
+  StackTrace? _pagingErrorStackTrace;
+  DropifyQuery? _pagingQuery;
   var _suppressSearchListener = false;
+  var _isPagingRequestInFlight = false;
   bool _isOpen = false;
 
   bool get _canInteract {
@@ -175,6 +198,11 @@ class _DropifyBuilderState<T> extends State<DropifyBuilder<T>> {
   DropifyQuery get _query => DropifyQuery.fromRaw(_searchController.text);
 
   List<DropifyItem<T>> get _visibleItems {
+    if (widget.source.isPaginated) {
+      final items = _pagingState.items ?? <DropifyItem<T>>[];
+      assert(debugAssertUniqueDropifyIdentities(items));
+      return List<DropifyItem<T>>.unmodifiable(items);
+    }
     if (widget.source.isAsync) {
       assert(debugAssertUniqueDropifyIdentities(_asyncItems));
       return List<DropifyItem<T>>.unmodifiable(_asyncItems);
@@ -186,6 +214,8 @@ class _DropifyBuilderState<T> extends State<DropifyBuilder<T>> {
 
   Iterable<DropifyItem<T>> get _availableItems {
     return widget.source.isAsync
+        ? _knownItemsByValue.values
+        : widget.source.isPaginated
         ? _knownItemsByValue.values
         : widget.source.items;
   }
@@ -220,6 +250,9 @@ class _DropifyBuilderState<T> extends State<DropifyBuilder<T>> {
     _searchController = TextEditingController();
     _searchController.addListener(_handleSearchTextChanged);
     _searchFocusNode = FocusNode();
+    _pagingScrollController = ScrollController();
+    _nextPageKey = widget.source.firstPageKey;
+    _pagingQuery = _query;
     widget.controller?.addListener(_handleControllerCommand);
   }
 
@@ -233,8 +266,15 @@ class _DropifyBuilderState<T> extends State<DropifyBuilder<T>> {
     if (!_canInteract && _isOpen) {
       _close();
     }
-    if (oldWidget.source != widget.source && widget.source.isAsync && _isOpen) {
-      _loadAsyncItems(_query);
+    final sourceModeChanged =
+        oldWidget.source.isAsync != widget.source.isAsync ||
+        oldWidget.source.isPaginated != widget.source.isPaginated;
+    if (sourceModeChanged && _isOpen) {
+      if (widget.source.isAsync) {
+        _loadAsyncItems(_query);
+      } else if (widget.source.isPaginated) {
+        _resetPaging(_query);
+      }
     }
   }
 
@@ -242,6 +282,7 @@ class _DropifyBuilderState<T> extends State<DropifyBuilder<T>> {
   void dispose() {
     widget.controller?.removeListener(_handleControllerCommand);
     _searchDebounceTimer?.cancel();
+    _pagingScrollController.dispose();
     _searchFocusNode.dispose();
     _searchController.removeListener(_handleSearchTextChanged);
     _searchController.dispose();
@@ -262,10 +303,14 @@ class _DropifyBuilderState<T> extends State<DropifyBuilder<T>> {
       case DropifyControllerCommand.refresh:
         if (widget.source.isAsync) {
           _loadAsyncItems(_query);
+        } else if (widget.source.isPaginated) {
+          _resetPaging(_query);
         }
       case DropifyControllerCommand.retry:
         if (widget.source.isAsync) {
           _retryAsyncLoad();
+        } else if (widget.source.isPaginated) {
+          _retryPagingLoad();
         }
       case null:
         break;
@@ -292,11 +337,16 @@ class _DropifyBuilderState<T> extends State<DropifyBuilder<T>> {
   }
 
   void _handleOpen() {
+    if (_isOpen) {
+      return;
+    }
     setState(() {
       _isOpen = true;
     });
     if (widget.source.isAsync && !_hasLoadedAsyncItems && !_isLoading) {
       _loadAsyncItems(_query);
+    } else if (widget.source.isPaginated && _pagingState.pages == null) {
+      _loadNextPage();
     }
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted && _isOpen) {
@@ -307,17 +357,25 @@ class _DropifyBuilderState<T> extends State<DropifyBuilder<T>> {
 
   void _handleClose() {
     _searchDebounceTimer?.cancel();
-    if (widget.source.isAsync) {
+    if (widget.source.isAsync || widget.source.isPaginated) {
       _requestSerial++;
     }
     setState(() {
       _isOpen = false;
+      if (widget.source.isPaginated) {
+        _isPagingRequestInFlight = false;
+      }
       _setSearchText('', notify: false);
     });
   }
 
   void _handleSearchTextChanged() {
     if (_suppressSearchListener) {
+      return;
+    }
+    if (widget.source.isPaginated && _isOpen) {
+      setState(() {});
+      _schedulePaginatedSearch();
       return;
     }
     if (widget.source.isAsync && _isOpen) {
@@ -342,6 +400,8 @@ class _DropifyBuilderState<T> extends State<DropifyBuilder<T>> {
       setState(() {});
       if (widget.source.isAsync && _isOpen) {
         _scheduleAsyncSearch();
+      } else if (widget.source.isPaginated && _isOpen) {
+        _schedulePaginatedSearch();
       }
     }
   }
@@ -351,6 +411,15 @@ class _DropifyBuilderState<T> extends State<DropifyBuilder<T>> {
     _searchDebounceTimer = Timer(widget.searchDebounceDuration, () {
       if (mounted && _isOpen) {
         _loadAsyncItems(_query);
+      }
+    });
+  }
+
+  void _schedulePaginatedSearch() {
+    _searchDebounceTimer?.cancel();
+    _searchDebounceTimer = Timer(widget.searchDebounceDuration, () {
+      if (mounted && _isOpen) {
+        _resetPaging(_query);
       }
     });
   }
@@ -409,6 +478,100 @@ class _DropifyBuilderState<T> extends State<DropifyBuilder<T>> {
 
   void _retryAsyncLoad() {
     _loadAsyncItems(_failedQuery ?? _query);
+  }
+
+  void _resetPaging(DropifyQuery query) {
+    _searchDebounceTimer?.cancel();
+    _requestSerial++;
+    if (_pagingScrollController.hasClients) {
+      _pagingScrollController.jumpTo(0);
+    }
+    setState(() {
+      _pagingQuery = query;
+      _nextPageKey = widget.source.firstPageKey;
+      _pagingErrorStackTrace = null;
+      _isPagingRequestInFlight = false;
+      _pagingState = PagingState<Object?, DropifyItem<T>>(
+        hasNextPage: true,
+        isLoading: false,
+      );
+    });
+    if (_isOpen) {
+      _loadNextPage();
+    }
+  }
+
+  Future<void> _loadNextPage({bool reserved = false}) async {
+    final loader = widget.source.paginatedLoader;
+    if (loader == null ||
+        (!reserved && _isPagingRequestInFlight) ||
+        _pagingState.isLoading ||
+        !_pagingState.hasNextPage) {
+      return;
+    }
+
+    final query = _pagingQuery ?? _query;
+    final pageKey = _pagingState.pages == null
+        ? widget.source.firstPageKey
+        : _nextPageKey;
+    final requestId = ++_requestSerial;
+    _isPagingRequestInFlight = true;
+    setState(() {
+      _pagingErrorStackTrace = null;
+      _pagingState = _pagingState.copyWith(isLoading: true, error: null);
+    });
+
+    try {
+      final result = await Future<DropifyPageResult<T, Object?>>.sync(
+        () =>
+            loader(DropifyPageRequest<Object?>(query: query, pageKey: pageKey)),
+      );
+      if (!mounted ||
+          requestId != _requestSerial ||
+          !_isOpen ||
+          query != _pagingQuery) {
+        _isPagingRequestInFlight = false;
+        return;
+      }
+      final pages = <List<DropifyItem<T>>>[
+        ...?_pagingState.pages,
+        List<DropifyItem<T>>.unmodifiable(result.items),
+      ];
+      final allItems = pages.expand((page) => page);
+      assert(debugAssertUniqueDropifyIdentities(allItems));
+      for (final item in result.items) {
+        _knownItemsByValue[item.value] = item;
+      }
+      setState(() {
+        _isPagingRequestInFlight = false;
+        _nextPageKey = result.nextPageKey;
+        _pagingState = _pagingState.copyWith(
+          pages: pages,
+          keys: <Object?>[...?_pagingState.keys, pageKey],
+          hasNextPage: result.hasMore,
+          isLoading: false,
+          error: null,
+        );
+      });
+    } catch (error, stackTrace) {
+      if (!mounted ||
+          requestId != _requestSerial ||
+          !_isOpen ||
+          query != _pagingQuery) {
+        _isPagingRequestInFlight = false;
+        return;
+      }
+      widget.onError?.call(error, stackTrace);
+      setState(() {
+        _isPagingRequestInFlight = false;
+        _pagingErrorStackTrace = stackTrace;
+        _pagingState = _pagingState.copyWith(isLoading: false, error: error);
+      });
+    }
+  }
+
+  void _retryPagingLoad() {
+    _loadNextPage();
   }
 
   void _selectItem(DropifyItem<T> item) {
@@ -654,6 +817,9 @@ class _DropifyBuilderState<T> extends State<DropifyBuilder<T>> {
     final customDataBuilder = widget.dataBuilder;
     final error = _loadError;
     final stackTrace = _loadStackTrace;
+    if (widget.source.isPaginated) {
+      return _buildPaginatedBody(context, query);
+    }
     if (_isLoading && widget.source.isAsync) {
       final customLoadingBuilder = widget.loadingBuilder;
       return Padding(
@@ -770,6 +936,178 @@ class _DropifyBuilderState<T> extends State<DropifyBuilder<T>> {
             : null,
         title: Text(item.label),
         onTap: isDisabled ? null : () => _selectItem(item),
+      ),
+    );
+  }
+
+  Widget _buildPaginatedBody(BuildContext context, DropifyQuery query) {
+    if (_pagingState.pages == null) {
+      final error = _pagingState.error;
+      final stackTrace = _pagingErrorStackTrace;
+      if (error != null && stackTrace != null) {
+        final customErrorBuilder = widget.errorBuilder;
+        return Padding(
+          key: DropifyKeys.errorRow,
+          padding: const EdgeInsets.all(16),
+          child:
+              customErrorBuilder?.call(
+                context,
+                DropifyErrorState(
+                  query: query,
+                  error: error,
+                  stackTrace: stackTrace,
+                  retry: _retryPagingLoad,
+                ),
+              ) ??
+              Column(
+                mainAxisSize: MainAxisSize.min,
+                children: <Widget>[
+                  const Text('Could not load options'),
+                  TextButton(
+                    key: DropifyKeys.retryButton,
+                    onPressed: _retryPagingLoad,
+                    child: const Text('Retry'),
+                  ),
+                ],
+              ),
+        );
+      }
+      final customLoadingBuilder = widget.loadingBuilder;
+      return Padding(
+        key: DropifyKeys.loadingRow,
+        padding: const EdgeInsets.all(16),
+        child:
+            customLoadingBuilder?.call(
+              context,
+              DropifyLoadingState(query: query),
+            ) ??
+            const Text('Loading options...'),
+      );
+    }
+
+    return Flexible(
+      child: PagedListView<Object?, DropifyItem<T>>(
+        scrollController: _pagingScrollController,
+        shrinkWrap: true,
+        state: _pagingState,
+        fetchNextPage: _loadNextPage,
+        builderDelegate: PagedChildBuilderDelegate<DropifyItem<T>>(
+          invisibleItemsThreshold: 1,
+          itemBuilder: (context, item, index) {
+            return KeyedSubtree(
+              key: DropifyKeys.itemRow(item.identity),
+              child: _buildItem(context, item),
+            );
+          },
+          firstPageProgressIndicatorBuilder: (context) {
+            final customLoadingBuilder = widget.loadingBuilder;
+            return Padding(
+              key: DropifyKeys.loadingRow,
+              padding: const EdgeInsets.all(16),
+              child:
+                  customLoadingBuilder?.call(
+                    context,
+                    DropifyLoadingState(query: query),
+                  ) ??
+                  const Text('Loading options...'),
+            );
+          },
+          firstPageErrorIndicatorBuilder: (context) {
+            final error = _pagingState.error;
+            final stackTrace = _pagingErrorStackTrace;
+            final customErrorBuilder = widget.errorBuilder;
+            return Padding(
+              key: DropifyKeys.errorRow,
+              padding: const EdgeInsets.all(16),
+              child: error != null && stackTrace != null
+                  ? customErrorBuilder?.call(
+                          context,
+                          DropifyErrorState(
+                            query: query,
+                            error: error,
+                            stackTrace: stackTrace,
+                            retry: _retryPagingLoad,
+                          ),
+                        ) ??
+                        Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: <Widget>[
+                            const Text('Could not load options'),
+                            TextButton(
+                              key: DropifyKeys.retryButton,
+                              onPressed: _retryPagingLoad,
+                              child: const Text('Retry'),
+                            ),
+                          ],
+                        )
+                  : const Text('Could not load options'),
+            );
+          },
+          noItemsFoundIndicatorBuilder: (context) {
+            final customEmptyBuilder = widget.emptyBuilder;
+            return Padding(
+              key: DropifyKeys.emptyRow,
+              padding: const EdgeInsets.all(16),
+              child:
+                  customEmptyBuilder?.call(
+                    context,
+                    DropifyEmptyState(query: query),
+                  ) ??
+                  Text(widget.emptyText),
+            );
+          },
+          newPageProgressIndicatorBuilder: (context) {
+            final customLoadMoreBuilder = widget.loadMoreBuilder;
+            return Padding(
+              key: DropifyKeys.paginationLoadingRow,
+              padding: const EdgeInsets.all(16),
+              child:
+                  customLoadMoreBuilder?.call(
+                    context,
+                    DropifyLoadMoreState(query: query),
+                  ) ??
+                  const Text('Loading more options...'),
+            );
+          },
+          newPageErrorIndicatorBuilder: (context) {
+            final error = _pagingState.error;
+            final stackTrace = _pagingErrorStackTrace;
+            final customLoadMoreErrorBuilder = widget.loadMoreErrorBuilder;
+            return Padding(
+              key: DropifyKeys.paginationErrorRow,
+              padding: const EdgeInsets.all(16),
+              child: error != null && stackTrace != null
+                  ? customLoadMoreErrorBuilder?.call(
+                          context,
+                          DropifyLoadMoreErrorState(
+                            query: query,
+                            error: error,
+                            stackTrace: stackTrace,
+                            retry: _retryPagingLoad,
+                          ),
+                        ) ??
+                        TextButton(
+                          key: DropifyKeys.paginationRetryButton,
+                          onPressed: _retryPagingLoad,
+                          child: const Text('Retry loading more'),
+                        )
+                  : const Text('Could not load more options'),
+            );
+          },
+          noMoreItemsIndicatorBuilder: (context) {
+            final customNoMoreItemsBuilder = widget.noMoreItemsBuilder;
+            return Padding(
+              key: DropifyKeys.noMoreItemsRow,
+              padding: const EdgeInsets.all(16),
+              child:
+                  customNoMoreItemsBuilder?.call(
+                    context,
+                    DropifyNoMoreItemsState(query: query),
+                  ) ??
+                  const Text('No more options'),
+            );
+          },
+        ),
       ),
     );
   }

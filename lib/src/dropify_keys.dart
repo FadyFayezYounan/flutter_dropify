@@ -29,6 +29,24 @@ abstract final class DropifyKeys {
   /// Retry button selector.
   static const Key retryButton = ValueKey<String>('dropify.retryButton');
 
+  /// Pagination loading row selector.
+  static const Key paginationLoadingRow = ValueKey<String>(
+    'dropify.paginationLoadingRow',
+  );
+
+  /// Pagination error row selector.
+  static const Key paginationErrorRow = ValueKey<String>(
+    'dropify.paginationErrorRow',
+  );
+
+  /// Pagination retry button selector.
+  static const Key paginationRetryButton = ValueKey<String>(
+    'dropify.paginationRetryButton',
+  );
+
+  /// No-more-items row selector.
+  static const Key noMoreItemsRow = ValueKey<String>('dropify.noMoreItemsRow');
+
   /// Returns an item-row selector for [identity].
   static Key itemRow(Object? identity) {
     return ValueKey<String>('dropify.itemRow.$identity');

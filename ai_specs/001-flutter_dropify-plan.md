@@ -51,23 +51,23 @@ Production `flutter_dropify` package. Builder-first core, typed convenience widg
 - [x] Robot journey tests + selectors/seams: async fail, retry, search, select; fake loader + controllable completers
 - [x] Verify: `flutter analyze` && `flutter test`
 
-### Phase 3: Paginated Slice
+### Phase 3: Paginated Slice (Complete)
 
 - **Goal**: paged loading without public paging-package leakage
-- [ ] `pubspec.yaml` - add `infinite_scroll_pagination: ^5.1.1`
-- [ ] `lib/src/dropify_pagination.dart` - `DropifyPageRequest<PageKey>`, `DropifyPageResult<T, PageKey>`, invalid-result asserts
-- [ ] `lib/src/dropify_paginated_dropdown.dart` - `DropifyPaginatedDropdown<T, PageKey>` and `.multi`
-- [ ] `lib/src/dropify_source.dart` - paginated source/loader typedefs
-- [ ] `lib/src/dropify_builder.dart` - internal paging adapter, first page, next page, reset on search, scroll reset
-- [ ] `lib/src/dropify_builders.dart` - load-more/loading-error/no-more builder states
-- [ ] `test/flutter_dropify_test.dart` - paginated widget/model tests; no public `PagingController`/`PagingState`
-- [ ] TDD: first page loads on open, scroll loads next page once, single select closes
-- [ ] TDD: duplicate load-more coalesced, next-page error preserves prior items, retry failed page only
-- [ ] TDD: search resets pages/scroll and ignores stale page responses
-- [ ] TDD: paginated multi selections persist across pages/searches
-- [ ] TDD: invalid page result asserts clearly
-- [ ] Robot journey tests + selectors/seams: paginated select; paginated multi page-one + page-two + search persistence
-- [ ] Verify: `flutter pub get` && `flutter analyze` && `flutter test`
+- [x] `pubspec.yaml` - add `infinite_scroll_pagination: ^5.1.1`
+- [x] `lib/src/dropify_pagination.dart` - `DropifyPageRequest<PageKey>`, `DropifyPageResult<T, PageKey>`, invalid-result asserts
+- [x] `lib/src/dropify_paginated_dropdown.dart` - `DropifyPaginatedDropdown<T, PageKey>` and `.multi`
+- [x] `lib/src/dropify_source.dart` - paginated source/loader typedefs
+- [x] `lib/src/dropify_builder.dart` - internal paging adapter, first page, next page, reset on search, scroll reset
+- [x] `lib/src/dropify_builders.dart` - load-more/loading-error/no-more builder states
+- [x] `test/flutter_dropify_test.dart` - paginated widget/model tests; no public `PagingController`/`PagingState`
+- [x] TDD: first page loads on open, scroll loads next page once, single select closes
+- [x] TDD: duplicate load-more coalesced, next-page error preserves prior items, retry failed page only
+- [x] TDD: search resets pages/scroll and ignores stale page responses
+- [x] TDD: paginated multi selections persist across pages/searches
+- [x] TDD: invalid page result asserts clearly
+- [x] Robot journey tests + selectors/seams: paginated select; paginated multi page-one + page-two + search persistence
+- [x] Verify: `flutter pub get` && `flutter analyze` && `flutter test`
 
 ### Phase 4: Theme, Form, Keyboard, A11y
 

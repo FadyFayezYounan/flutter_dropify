@@ -35,6 +35,18 @@ typedef DropifyLoadingBuilder =
 typedef DropifyErrorBuilder =
     Widget Function(BuildContext context, DropifyErrorState state);
 
+/// Builds a pagination load-more state.
+typedef DropifyLoadMoreBuilder =
+    Widget Function(BuildContext context, DropifyLoadMoreState state);
+
+/// Builds a pagination load-more error state.
+typedef DropifyLoadMoreErrorBuilder =
+    Widget Function(BuildContext context, DropifyLoadMoreErrorState state);
+
+/// Builds an end-of-pagination state.
+typedef DropifyNoMoreItemsBuilder =
+    Widget Function(BuildContext context, DropifyNoMoreItemsState state);
+
 /// Builds an advanced replacement for the data menu body.
 typedef DropifyDataBuilder<T> =
     Widget Function(BuildContext context, DropifyDataState<T> state);
@@ -212,6 +224,50 @@ class DropifyErrorState {
 
   /// Retries the failed load.
   final VoidCallback retry;
+}
+
+/// State passed to [DropifyLoadMoreBuilder].
+@immutable
+class DropifyLoadMoreState {
+  /// Creates a [DropifyLoadMoreState].
+  const DropifyLoadMoreState({required this.query});
+
+  /// Current query for the page being loaded.
+  final DropifyQuery query;
+}
+
+/// State passed to [DropifyLoadMoreErrorBuilder].
+@immutable
+class DropifyLoadMoreErrorState {
+  /// Creates a [DropifyLoadMoreErrorState].
+  const DropifyLoadMoreErrorState({
+    required this.query,
+    required this.error,
+    required this.stackTrace,
+    required this.retry,
+  });
+
+  /// Current query for the failed page.
+  final DropifyQuery query;
+
+  /// Error thrown by the page loader.
+  final Object error;
+
+  /// Stack trace captured with [error].
+  final StackTrace stackTrace;
+
+  /// Retries the failed page load.
+  final VoidCallback retry;
+}
+
+/// State passed to [DropifyNoMoreItemsBuilder].
+@immutable
+class DropifyNoMoreItemsState {
+  /// Creates a [DropifyNoMoreItemsState].
+  const DropifyNoMoreItemsState({required this.query});
+
+  /// Current query for the completed listing.
+  final DropifyQuery query;
 }
 
 /// State passed to [DropifyDataBuilder].

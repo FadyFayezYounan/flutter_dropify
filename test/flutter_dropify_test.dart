@@ -27,6 +27,17 @@ void main() {
     expect(fallback.identity, 'fr');
   });
 
+  test('DropifyPageResult asserts when a continuing page has no next key', () {
+    expect(
+      () => DropifyPageResult<String, int>(
+        items: const <DropifyItem<String>>[],
+        nextPageKey: null,
+        hasMore: true,
+      ),
+      throwsAssertionError,
+    );
+  });
+
   testWidgets(
     'static single opens, filters, selects enabled item, calls onChanged, closes',
     (tester) async {
@@ -417,18 +428,295 @@ void main() {
       expect(find.text('France'), findsOneWidget);
     },
   );
+
+  testWidgets(
+    'paginated first page loads on open, scroll loads next page once, and single select closes',
+    (tester) async {
+      final requests = <int?, Completer<DropifyPageResult<String, int>>>{};
+      String? changed;
+      await tester.pumpWidget(
+        _Harness(
+          alignment: Alignment.topCenter,
+          child: DropifyPaginatedDropdown<String, int>(
+            value: null,
+            firstPageKey: 1,
+            pageLoader: (request) {
+              final completer = Completer<DropifyPageResult<String, int>>();
+              requests[request.pageKey] = completer;
+              return completer.future;
+            },
+            onChanged: (value) => changed = value,
+          ),
+        ),
+      );
+      final robot = _DropifyRobot(tester);
+
+      await robot.open();
+      expect(find.byKey(DropifyKeys.loadingRow), findsOneWidget);
+
+      requests[1]!.complete(
+        DropifyPageResult<String, int>(
+          items: _pagedItems(start: 0, count: 30),
+          nextPageKey: 2,
+          hasMore: true,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(DropifyKeys.itemRow('p0')), findsOneWidget);
+      expect(requests.containsKey(2), isFalse);
+
+      await robot.scrollToItem('p29');
+      await tester.pump();
+      expect(requests.containsKey(2), isTrue);
+      await tester.pump();
+      expect(find.byKey(DropifyKeys.paginationLoadingRow), findsOneWidget);
+
+      requests[2]!.complete(
+        DropifyPageResult<String, int>(
+          items: _pagedItems(start: 30, count: 3),
+          nextPageKey: null,
+          hasMore: false,
+        ),
+      );
+      await tester.pumpAndSettle();
+      await robot.scrollToItem('p30');
+      await robot.selectItem('p30');
+
+      expect(changed, 'p30');
+      expect(find.byKey(DropifyKeys.menuOverlay), findsNothing);
+    },
+  );
+
+  testWidgets(
+    'paginated duplicate load-more is coalesced and next-page error retries failed page only',
+    (tester) async {
+      final requests =
+          <int?, List<Completer<DropifyPageResult<String, int>>>>{};
+      await tester.pumpWidget(
+        _Harness(
+          alignment: Alignment.topCenter,
+          child: DropifyPaginatedDropdown<String, int>(
+            value: null,
+            firstPageKey: 1,
+            pageLoader: (request) {
+              final completer = Completer<DropifyPageResult<String, int>>();
+              requests
+                  .putIfAbsent(
+                    request.pageKey,
+                    () => <Completer<DropifyPageResult<String, int>>>[],
+                  )
+                  .add(completer);
+              return completer.future;
+            },
+            onChanged: (_) {},
+          ),
+        ),
+      );
+      final robot = _DropifyRobot(tester);
+
+      await robot.open();
+      requests[1]!.single.complete(
+        DropifyPageResult<String, int>(
+          items: _pagedItems(start: 0, count: 30),
+          nextPageKey: 2,
+          hasMore: true,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await robot.scrollToItem('p29');
+      await tester.pump();
+      await tester.pump();
+      expect(requests[2], hasLength(1));
+
+      requests[2]!.single.completeError(StateError('page failed'));
+      await tester.pump();
+      await tester.pump();
+
+      expect(find.byKey(DropifyKeys.paginationErrorRow), findsOneWidget);
+      expect(find.byKey(DropifyKeys.itemRow('p29')), findsOneWidget);
+
+      await tester.ensureVisible(find.byKey(DropifyKeys.paginationRetryButton));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(DropifyKeys.paginationRetryButton));
+      await tester.pump();
+      expect(requests[1], hasLength(1));
+      expect(requests[2], hasLength(2));
+
+      requests[2]!.last.complete(
+        DropifyPageResult<String, int>(
+          items: _pagedItems(start: 30, count: 1),
+          nextPageKey: null,
+          hasMore: false,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await robot.scrollToItem('p30');
+      expect(find.byKey(DropifyKeys.itemRow('p30')), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'paginated search resets pages and ignores stale page responses',
+    (tester) async {
+      final requests = <String, Completer<DropifyPageResult<String, int>>>{};
+      await tester.pumpWidget(
+        _Harness(
+          alignment: Alignment.topCenter,
+          child: DropifyPaginatedDropdown<String, int>(
+            value: null,
+            firstPageKey: 1,
+            searchDebounceDuration: const Duration(milliseconds: 10),
+            pageLoader: (request) {
+              final completer = Completer<DropifyPageResult<String, int>>();
+              requests['${request.query.normalizedText}:${request.pageKey}'] =
+                  completer;
+              return completer.future;
+            },
+            onChanged: (_) {},
+          ),
+        ),
+      );
+      final robot = _DropifyRobot(tester);
+
+      await robot.open();
+      requests[':1']!.complete(
+        DropifyPageResult<String, int>(
+          items: _pagedItems(start: 0, count: 30),
+          nextPageKey: 2,
+          hasMore: true,
+        ),
+      );
+      await tester.pumpAndSettle();
+      await robot.scrollToItem('p29');
+      await tester.pump();
+      expect(requests.containsKey(':2'), isTrue);
+
+      await tester.enterText(find.byKey(DropifyKeys.searchInput), 'needle');
+      await tester.pump(const Duration(milliseconds: 10));
+      expect(requests.containsKey('needle:1'), isTrue);
+
+      requests[':2']!.complete(
+        DropifyPageResult<String, int>(
+          items: _pagedItems(start: 30, count: 1),
+          nextPageKey: null,
+          hasMore: false,
+        ),
+      );
+      requests['needle:1']!.complete(
+        const DropifyPageResult<String, int>(
+          items: <DropifyItem<String>>[
+            DropifyItem(value: 'needle', label: 'Needle result'),
+          ],
+          nextPageKey: null,
+          hasMore: false,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(DropifyKeys.itemRow('needle')), findsOneWidget);
+      expect(find.byKey(DropifyKeys.itemRow('p30')), findsNothing);
+    },
+  );
+
+  testWidgets('paginated multi selections persist across pages and searches', (
+    tester,
+  ) async {
+    final requests = <String, Completer<DropifyPageResult<String, int>>>{};
+    var values = <String>[];
+    await tester.pumpWidget(
+      _Harness(
+        alignment: Alignment.topCenter,
+        child: StatefulBuilder(
+          builder: (context, setState) {
+            return DropifyPaginatedDropdown<String, int>.multi(
+              values: values,
+              firstPageKey: 1,
+              searchDebounceDuration: const Duration(milliseconds: 10),
+              pageLoader: (request) {
+                final completer = Completer<DropifyPageResult<String, int>>();
+                requests['${request.query.normalizedText}:${request.pageKey}'] =
+                    completer;
+                return completer.future;
+              },
+              onChanged: (nextValues) => setState(() => values = nextValues),
+            );
+          },
+        ),
+      ),
+    );
+    final robot = _DropifyRobot(tester);
+
+    await robot.open();
+    requests[':1']!.complete(
+      DropifyPageResult<String, int>(
+        items: _pagedItems(start: 0, count: 30),
+        nextPageKey: 2,
+        hasMore: true,
+      ),
+    );
+    await tester.pumpAndSettle();
+    await robot.selectItem('p0');
+
+    await robot.scrollToItem('p29');
+    await tester.pump();
+    requests[':2']!.complete(
+      DropifyPageResult<String, int>(
+        items: _pagedItems(start: 30, count: 1),
+        nextPageKey: null,
+        hasMore: false,
+      ),
+    );
+    await tester.pumpAndSettle();
+    await robot.scrollToItem('p30');
+    await robot.selectItem('p30');
+
+    await tester.enterText(find.byKey(DropifyKeys.searchInput), 'needle');
+    await tester.pump(const Duration(milliseconds: 10));
+    requests['needle:1']!.complete(
+      const DropifyPageResult<String, int>(
+        items: <DropifyItem<String>>[
+          DropifyItem(value: 'needle', label: 'Needle result'),
+        ],
+        nextPageKey: null,
+        hasMore: false,
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(values, <String>['p0', 'p30']);
+    expect(find.byKey(DropifyKeys.selectedChip('p0')), findsOneWidget);
+    expect(find.byKey(DropifyKeys.selectedChip('p30')), findsOneWidget);
+    expect(find.byKey(DropifyKeys.menuOverlay), findsOneWidget);
+  });
+}
+
+List<DropifyItem<String>> _pagedItems({
+  required int start,
+  required int count,
+}) {
+  return List<DropifyItem<String>>.generate(count, (index) {
+    final value = 'p${start + index}';
+    return DropifyItem(value: value, label: 'Page item ${start + index}');
+  });
 }
 
 class _Harness extends StatelessWidget {
-  const _Harness({required this.child});
+  const _Harness({required this.child, this.alignment = Alignment.center});
 
   final Widget child;
+  final Alignment alignment;
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       home: Scaffold(
-        body: Center(child: SizedBox(width: 280, child: child)),
+        body: Align(
+          alignment: alignment,
+          child: SizedBox(width: 280, child: child),
+        ),
       ),
     );
   }
@@ -466,6 +754,15 @@ class _DropifyRobot {
 
   Future<void> retry() async {
     await tester.tap(find.byKey(DropifyKeys.retryButton));
+    await tester.pumpAndSettle();
+  }
+
+  Future<void> scrollToItem(Object identity) async {
+    await tester.scrollUntilVisible(
+      find.byKey(DropifyKeys.itemRow(identity)),
+      280,
+      scrollable: find.byType(Scrollable).last,
+    );
     await tester.pumpAndSettle();
   }
 }
