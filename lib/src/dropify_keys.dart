@@ -34,6 +34,22 @@ class DropifyKeys {
   ValueKey<String> get retryButton =>
       ValueKey<String>('$namespace.retryButton');
 
+  /// Key for the pagination loading row.
+  ValueKey<String> get paginationLoadingRow =>
+      ValueKey<String>('$namespace.paginationLoadingRow');
+
+  /// Key for the pagination end row.
+  ValueKey<String> get paginationEndRow =>
+      ValueKey<String>('$namespace.paginationEndRow');
+
+  /// Key for the pagination error row.
+  ValueKey<String> get paginationErrorRow =>
+      ValueKey<String>('$namespace.paginationErrorRow');
+
+  /// Key for the pagination retry button.
+  ValueKey<String> get paginationRetryButton =>
+      ValueKey<String>('$namespace.paginationRetryButton');
+
   /// Returns the key for an item row.
   ValueKey<String> item(Object? value) {
     return ValueKey<String>('$namespace.item.$value');

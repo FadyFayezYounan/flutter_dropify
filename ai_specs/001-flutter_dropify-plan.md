@@ -46,18 +46,18 @@ Production v0.1 Dropify package. Typed dropdown core, thin convenience widgets, 
 - [x] Robot journey tests + selectors/seams for async retry then select: fake loader, zero debounce, retry key
 - [x] Verify: `flutter analyze` && `flutter test`
 
-### Phase 3: Pagination
+### Phase 3: Pagination (Complete)
 
 - **Goal**: first page, scroll load more, inline page errors
-- [ ] `lib/src/dropify_source.dart` - page request/result contracts, page key/hasMore assertions
-- [ ] `lib/src/dropify_field.dart` - first-page load, next-page coalescing, query reset, scroll reset
-- [ ] `lib/src/dropify_paginated_dropdown.dart` - thin paginated single-select wrapper
-- [ ] `lib/src/widgets/` - pagination loading/end/error rows, retry row keys
-- [ ] TDD: open loads first page; near-end scroll loads next page once -> implement pagination trigger
-- [ ] TDD: next-page failure preserves loaded items and retries failed page only -> implement inline error
-- [ ] TDD: query change resets pages/scroll and ignores stale page completions -> implement reset semantics
-- [ ] Robot journey tests + selectors/seams for scroll load then select: deterministic threshold, fake page loader
-- [ ] Verify: `flutter analyze` && `flutter test`
+- [x] `lib/src/dropify_source.dart` - page request/result contracts, page key/hasMore assertions
+- [x] `lib/src/dropify_field.dart` - first-page load, next-page coalescing, query reset, scroll reset
+- [x] `lib/src/dropify_paginated_dropdown.dart` - thin paginated single-select wrapper
+- [x] `lib/src/widgets/` - pagination loading/end/error rows, retry row keys
+- [x] TDD: open loads first page; near-end scroll loads next page once -> implement pagination trigger
+- [x] TDD: next-page failure preserves loaded items and retries failed page only -> implement inline error
+- [x] TDD: query change resets pages/scroll and ignores stale page completions -> implement reset semantics
+- [x] Robot journey tests + selectors/seams for scroll load then select: deterministic threshold, fake page loader
+- [x] Verify: `flutter analyze` && `flutter test`
 
 ### Phase 4: Multi-Select
 

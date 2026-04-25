@@ -33,9 +33,13 @@ class DropifyField<T> extends StatefulWidget {
     this.enabled = true,
     this.hintText,
     this.emptyText,
+    this.paginationTriggerExtent = 80.0,
     this.keys = DropifyKeys.defaultKeys,
     this.theme,
-  });
+  }) : assert(
+         paginationTriggerExtent >= 0.0,
+         'paginationTriggerExtent must be >= 0',
+       );
 
   /// Static source displayed by this field.
   final DropifySource<T> source;
@@ -60,6 +64,9 @@ class DropifyField<T> extends StatefulWidget {
 
   /// Empty-state text shown when no rows match.
   final String? emptyText;
+
+  /// Remaining scroll extent that triggers the next page load.
+  final double paginationTriggerExtent;
 
   /// Stable keys used by tests and robot journeys.
   final DropifyKeys keys;
@@ -89,6 +96,9 @@ class DropifyField<T> extends StatefulWidget {
     );
     properties.add(StringProperty('hintText', hintText, defaultValue: null));
     properties.add(StringProperty('emptyText', emptyText, defaultValue: null));
+    properties.add(
+      DoubleProperty('paginationTriggerExtent', paginationTriggerExtent),
+    );
     properties.add(DiagnosticsProperty<DropifyKeys>('keys', keys));
     properties.add(DiagnosticsProperty<DropifyThemeData?>('theme', theme));
   }
@@ -98,9 +108,16 @@ class _DropifyFieldState<T> extends State<DropifyField<T>> {
   late final MenuController _menuController;
   late final TextEditingController _searchController;
   late final FocusNode _searchFocusNode;
+  late final ScrollController _scrollController;
   Timer? _debounceTimer;
   List<DropifyItem<T>> _asyncItems = List<DropifyItem<T>>.empty();
   _DropifyAsyncState _asyncState = _DropifyAsyncState.idle;
+  bool _hasMorePages = false;
+  Object? _nextPageKey;
+  String? _loadingFirstPageQuery;
+  String? _loadedFirstPageQuery;
+  bool _isLoadingNextPage = false;
+  bool _hasNextPageError = false;
   int _requestToken = 0;
   bool _isOpen = false;
 
@@ -109,14 +126,14 @@ class _DropifyFieldState<T> extends State<DropifyField<T>> {
   }
 
   List<DropifyItem<T>> get _visibleItems {
-    if (widget.source.isAsync) {
+    if (widget.source.isRemote) {
       return _asyncItems;
     }
     return widget.source.filter(DropifyQuery(_searchController.text));
   }
 
   DropifyItem<T>? get _selectedItem {
-    final items = widget.source.isAsync ? _asyncItems : widget.source.items;
+    final items = widget.source.isRemote ? _asyncItems : widget.source.items;
     return DropifySingleSelection<T>(widget.value).findIn(items);
   }
 
@@ -127,6 +144,7 @@ class _DropifyFieldState<T> extends State<DropifyField<T>> {
     _searchController = TextEditingController()
       ..addListener(_handleSearchChanged);
     _searchFocusNode = FocusNode();
+    _scrollController = ScrollController()..addListener(_handleScrollChanged);
     widget.controller?.addListener(_handleControllerCommand);
   }
 
@@ -136,9 +154,8 @@ class _DropifyFieldState<T> extends State<DropifyField<T>> {
     if (!widget.enabled && _isOpen) {
       _menuController.close();
     }
-    if (oldWidget.source != widget.source && widget.source.isAsync) {
-      _asyncItems = List<DropifyItem<T>>.empty();
-      _asyncState = _DropifyAsyncState.idle;
+    if (oldWidget.source != widget.source && widget.source.isRemote) {
+      _resetRemoteState();
     }
     if (oldWidget.controller != widget.controller) {
       oldWidget.controller?.removeListener(_handleControllerCommand);
@@ -154,8 +171,22 @@ class _DropifyFieldState<T> extends State<DropifyField<T>> {
     _searchController
       ..removeListener(_handleSearchChanged)
       ..dispose();
+    _scrollController
+      ..removeListener(_handleScrollChanged)
+      ..dispose();
     _searchFocusNode.dispose();
     super.dispose();
+  }
+
+  void _resetRemoteState() {
+    _asyncItems = List<DropifyItem<T>>.empty();
+    _asyncState = _DropifyAsyncState.idle;
+    _hasMorePages = false;
+    _nextPageKey = null;
+    _loadingFirstPageQuery = null;
+    _loadedFirstPageQuery = null;
+    _isLoadingNextPage = false;
+    _hasNextPageError = false;
   }
 
   void _handleControllerCommand() {
@@ -174,15 +205,19 @@ class _DropifyFieldState<T> extends State<DropifyField<T>> {
           _searchController.clear();
         }
         if (_isOpen) {
-          if (widget.source.isAsync && wasEmpty) {
-            _loadAsyncItems();
-          } else if (!widget.source.isAsync) {
+          if (widget.source.isRemote && wasEmpty) {
+            _loadRemoteItems(force: true);
+          } else if (!widget.source.isRemote) {
             setState(() {});
           }
         }
       case DropifyControllerCommand.refresh || DropifyControllerCommand.retry:
-        if (_isOpen && widget.source.isAsync) {
-          _loadAsyncItems();
+        if (_isOpen && widget.source.isRemote) {
+          if (widget.source.isPaginated && _hasNextPageError) {
+            _loadNextPage(force: true);
+          } else {
+            _loadRemoteItems(force: true);
+          }
         }
       case null:
         return;
@@ -193,21 +228,29 @@ class _DropifyFieldState<T> extends State<DropifyField<T>> {
     if (!_isOpen) {
       return;
     }
-    if (widget.source.isAsync) {
-      _scheduleAsyncLoad();
+    if (widget.source.isRemote) {
+      _scheduleRemoteLoad();
     } else {
       setState(() {});
     }
   }
 
-  void _scheduleAsyncLoad() {
+  void _scheduleRemoteLoad() {
     _debounceTimer?.cancel();
     final debounceDuration = widget.source.debounceDuration;
     if (debounceDuration == Duration.zero) {
-      _loadAsyncItems();
+      _loadRemoteItems();
       return;
     }
-    _debounceTimer = Timer(debounceDuration, _loadAsyncItems);
+    _debounceTimer = Timer(debounceDuration, _loadRemoteItems);
+  }
+
+  void _loadRemoteItems({bool force = false}) {
+    if (widget.source.isPaginated) {
+      _loadFirstPage(force: force);
+    } else {
+      _loadAsyncItems();
+    }
   }
 
   Future<void> _loadAsyncItems() async {
@@ -242,6 +285,121 @@ class _DropifyFieldState<T> extends State<DropifyField<T>> {
     }
   }
 
+  void _handleScrollChanged() {
+    if (!widget.source.isPaginated || !_scrollController.hasClients) {
+      return;
+    }
+    if (_scrollController.position.extentAfter <=
+        widget.paginationTriggerExtent) {
+      _loadNextPage();
+    }
+  }
+
+  Future<void> _loadFirstPage({bool force = false}) async {
+    if (!widget.source.isPaginated || !_isOpen || !widget.enabled) {
+      return;
+    }
+    final query = DropifyQuery(_searchController.text);
+    if (!force &&
+        _asyncState == _DropifyAsyncState.data &&
+        _loadedFirstPageQuery == query.text) {
+      return;
+    }
+    if (_asyncState == _DropifyAsyncState.loading &&
+        _loadingFirstPageQuery == query.text) {
+      return;
+    }
+    final token = _requestToken + 1;
+    _requestToken = token;
+    setState(() {
+      _asyncItems = List<DropifyItem<T>>.empty();
+      _asyncState = _DropifyAsyncState.loading;
+      _hasMorePages = false;
+      _nextPageKey = null;
+      _loadingFirstPageQuery = query.text;
+      _loadedFirstPageQuery = null;
+      _isLoadingNextPage = false;
+      _hasNextPageError = false;
+    });
+
+    try {
+      final result = await widget.source.loadPage(
+        DropifyPageRequest(query: query),
+      );
+      if (!mounted || token != _requestToken || !_isOpen) {
+        return;
+      }
+      setState(() {
+        _asyncItems = List<DropifyItem<T>>.unmodifiable(result.items);
+        _asyncState = _DropifyAsyncState.data;
+        _hasMorePages = result.hasMore;
+        _nextPageKey = result.nextPageKey;
+        _loadingFirstPageQuery = null;
+        _loadedFirstPageQuery = query.text;
+      });
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _scrollController.hasClients) {
+          _scrollController.jumpTo(0.0);
+        }
+      });
+    } catch (error, stackTrace) {
+      if (!mounted || token != _requestToken || !_isOpen) {
+        return;
+      }
+      widget.onError?.call(error, stackTrace);
+      setState(() {
+        _asyncItems = List<DropifyItem<T>>.empty();
+        _asyncState = _DropifyAsyncState.error;
+        _loadingFirstPageQuery = null;
+      });
+    }
+  }
+
+  Future<void> _loadNextPage({bool force = false}) async {
+    if (!widget.source.isPaginated ||
+        !_isOpen ||
+        !widget.enabled ||
+        !_hasMorePages ||
+        _isLoadingNextPage ||
+        (_hasNextPageError && !force)) {
+      return;
+    }
+    final token = _requestToken;
+    final pageKey = _nextPageKey;
+    setState(() {
+      _isLoadingNextPage = true;
+      _hasNextPageError = false;
+    });
+
+    final query = DropifyQuery(_searchController.text);
+    try {
+      final result = await widget.source.loadPage(
+        DropifyPageRequest(query: query, pageKey: pageKey),
+      );
+      if (!mounted || token != _requestToken || !_isOpen) {
+        return;
+      }
+      setState(() {
+        _asyncItems = List<DropifyItem<T>>.unmodifiable(<DropifyItem<T>>[
+          ..._asyncItems,
+          ...result.items,
+        ]);
+        _hasMorePages = result.hasMore;
+        _nextPageKey = result.nextPageKey;
+        _isLoadingNextPage = false;
+      });
+    } catch (error, stackTrace) {
+      if (!mounted || token != _requestToken || !_isOpen) {
+        return;
+      }
+      widget.onError?.call(error, stackTrace);
+      setState(() {
+        _isLoadingNextPage = false;
+        _hasNextPageError = true;
+      });
+    }
+  }
+
   void _toggleMenu() {
     if (!widget.enabled) {
       return;
@@ -257,8 +415,8 @@ class _DropifyFieldState<T> extends State<DropifyField<T>> {
     setState(() {
       _isOpen = true;
     });
-    if (widget.source.isAsync) {
-      _loadAsyncItems();
+    if (widget.source.isRemote) {
+      _loadRemoteItems();
     }
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted && _isOpen) {
@@ -274,6 +432,10 @@ class _DropifyFieldState<T> extends State<DropifyField<T>> {
     setState(() {
       _isOpen = false;
       _searchController.clear();
+      if (widget.source.isPaginated) {
+        _hasNextPageError = false;
+        _isLoadingNextPage = false;
+      }
     });
     _debounceTimer?.cancel();
     _requestToken += 1;
@@ -285,6 +447,37 @@ class _DropifyFieldState<T> extends State<DropifyField<T>> {
     }
     widget.onChanged(item.value);
     _menuController.close();
+  }
+
+  int get _paginationRowCount {
+    if (_isLoadingNextPage || _hasNextPageError || !_hasMorePages) {
+      return 1;
+    }
+    return 0;
+  }
+
+  Widget _buildPaginationRow(DropifyThemeData theme) {
+    if (_isLoadingNextPage) {
+      return DropifyLoadingRow(
+        key: widget.keys.paginationLoadingRow,
+        text: 'Loading more',
+        height: theme.itemHeight!,
+      );
+    }
+    if (_hasNextPageError) {
+      return DropifyErrorRow(
+        key: widget.keys.paginationErrorRow,
+        text: 'Unable to load more',
+        height: theme.itemHeight!,
+        retryKey: widget.keys.paginationRetryButton,
+        onRetry: () => _loadNextPage(force: true),
+      );
+    }
+    return DropifyEmptyRow(
+      key: widget.keys.paginationEndRow,
+      text: 'End of list',
+      height: theme.itemHeight!,
+    );
   }
 
   Widget _buildOverlay(BuildContext context, RawMenuOverlayInfo info) {
@@ -320,11 +513,14 @@ class _DropifyFieldState<T> extends State<DropifyField<T>> {
               builder: (context, value, child) {
                 final visibleItems = _visibleItems;
                 final showLoading =
-                    widget.source.isAsync &&
+                    widget.source.isRemote &&
                     _asyncState == _DropifyAsyncState.loading;
                 final showError =
-                    widget.source.isAsync &&
+                    widget.source.isRemote &&
                     _asyncState == _DropifyAsyncState.error;
+                final paginationRowCount = widget.source.isPaginated
+                    ? _paginationRowCount
+                    : 0;
                 return Column(
                   mainAxisSize: MainAxisSize.min,
                   children: <Widget>[
@@ -357,10 +553,15 @@ class _DropifyFieldState<T> extends State<DropifyField<T>> {
                               height: theme.itemHeight!,
                             )
                           : ListView.builder(
+                              controller: _scrollController,
                               shrinkWrap: true,
                               padding: EdgeInsets.zero,
-                              itemCount: visibleItems.length,
+                              itemCount:
+                                  visibleItems.length + paginationRowCount,
                               itemBuilder: (context, index) {
+                                if (index >= visibleItems.length) {
+                                  return _buildPaginationRow(theme);
+                                }
                                 final item = visibleItems[index];
                                 return DropifyItemRow<T>(
                                   key: widget.keys.item(

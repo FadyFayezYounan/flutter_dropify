@@ -24,7 +24,45 @@ typedef DropifyAsyncItemsLoader<T> =
 typedef DropifyErrorCallback =
     void Function(Object error, StackTrace stackTrace);
 
-enum _DropifySourceKind { static, async }
+/// Loads a page of items for a paginated Dropify source.
+typedef DropifyPageLoader<T> =
+    Future<DropifyPageResult<T>> Function(DropifyPageRequest request);
+
+/// Describes one paginated source request.
+class DropifyPageRequest {
+  /// Creates a page request for [query] and optional [pageKey].
+  const DropifyPageRequest({required this.query, this.pageKey});
+
+  /// The current search query.
+  final DropifyQuery query;
+
+  /// The source-owned key for the page to load, or null for the first page.
+  final Object? pageKey;
+}
+
+/// Describes one loaded page of Dropify items.
+class DropifyPageResult<T> {
+  /// Creates a page result.
+  const DropifyPageResult({
+    required this.items,
+    required this.hasMore,
+    this.nextPageKey,
+  }) : assert(
+         !hasMore || nextPageKey != null,
+         'nextPageKey must be provided when hasMore is true.',
+       );
+
+  /// Items returned for the requested page.
+  final List<DropifyItem<T>> items;
+
+  /// Whether another page can be requested.
+  final bool hasMore;
+
+  /// The key to send with the next [DropifyPageRequest].
+  final Object? nextPageKey;
+}
+
+enum _DropifySourceKind { static, async, paginated }
 
 /// A source of typed Dropify items.
 class DropifySource<T> {
@@ -35,6 +73,7 @@ class DropifySource<T> {
   }) : _items = items,
        _filter = filter,
        _loader = null,
+       _pageLoader = null,
        _debounceDuration = Duration.zero,
        _kind = _DropifySourceKind.static;
 
@@ -46,17 +85,37 @@ class DropifySource<T> {
        _items = const <DropifyItem<Never>>[],
        _filter = null,
        _loader = loader,
+       _pageLoader = null,
        _debounceDuration = debounceDuration,
        _kind = _DropifySourceKind.async;
+
+  /// Creates a paginated async item source.
+  DropifySource.paginated({
+    required DropifyPageLoader<T> pageLoader,
+    Duration debounceDuration = const Duration(milliseconds: 300),
+  }) : assert(!debounceDuration.isNegative, 'debounceDuration must be >= 0'),
+       _items = const <DropifyItem<Never>>[],
+       _filter = null,
+       _loader = null,
+       _pageLoader = pageLoader,
+       _debounceDuration = debounceDuration,
+       _kind = _DropifySourceKind.paginated;
 
   final List<DropifyItem<T>> _items;
   final DropifyItemFilter<T>? _filter;
   final DropifyAsyncItemsLoader<T>? _loader;
+  final DropifyPageLoader<T>? _pageLoader;
   final Duration _debounceDuration;
   final _DropifySourceKind _kind;
 
   /// Whether this source loads items asynchronously.
   bool get isAsync => _kind == _DropifySourceKind.async;
+
+  /// Whether this source loads items one page at a time.
+  bool get isPaginated => _kind == _DropifySourceKind.paginated;
+
+  /// Whether this source loads data from callbacks instead of local filtering.
+  bool get isRemote => isAsync || isPaginated;
 
   /// Delay applied before async search reloads.
   Duration get debounceDuration => _debounceDuration;
@@ -69,6 +128,16 @@ class DropifySource<T> {
     final loader = _loader;
     assert(loader != null, 'Only async Dropify sources can load items.');
     return loader!(query);
+  }
+
+  /// Loads one page of items for [request] from a paginated source.
+  Future<DropifyPageResult<T>> loadPage(DropifyPageRequest request) {
+    final pageLoader = _pageLoader;
+    assert(
+      pageLoader != null,
+      'Only paginated Dropify sources can load pages.',
+    );
+    return pageLoader!(request);
   }
 
   /// Returns items matching [query] using the custom filter or label contains.
