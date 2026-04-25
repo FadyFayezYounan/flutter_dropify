@@ -14,26 +14,26 @@ Production `flutter_dropify` package. Builder-first core, typed convenience widg
 
 ## Plan
 
-### Phase 1: Static Slice
+### Phase 1: Static Slice (Complete)
 
 - **Goal**: static single/multi critical path, end-to-end
-- [ ] `pubspec.yaml` - description, Flutter lower bound after `RawMenuAnchor`/`MenuController`/`TapRegion` verification
-- [ ] `lib/flutter_dropify.dart` - export real public API; remove placeholder surface
-- [ ] `lib/src/dropify_item.dart` - immutable `DropifyItem<T>`, identity fallback, duplicate-visible assert helper
-- [ ] `lib/src/dropify_query.dart` - raw/normalized query model
-- [ ] `lib/src/dropify_controller.dart` - interaction-only open/close/toggle/search/refresh/retry contract
-- [ ] `lib/src/dropify_keys.dart` - stable selector contract
-- [ ] `lib/src/dropify_source.dart` - static source + filter callback types
-- [ ] `lib/src/dropify_builders.dart` - public builder typedefs/state objects needed for static UI
-- [ ] `lib/src/dropify_builder.dart` - RawMenuAnchor core, search, lazy list, outside tap, empty state, disabled state
-- [ ] `lib/src/dropify_dropdown.dart` - `DropifyDropdown<T>` and `.multi`; controlled selection only
-- [ ] `test/flutter_dropify_test.dart` - replace placeholder; package static behavior tests
-- [ ] TDD: static single opens, filters, selects enabled item, calls `onChanged`, closes
-- [ ] TDD: static multi toggles values, emits immutable lists, clear all, select visible, stays open
-- [ ] TDD: empty/search-empty, disabled widget/row, custom filter, duplicate visible identity assert
-- [ ] TDD: builder callbacks receive open/search/selected/disabled/highlight state without losing keys
-- [ ] Robot journey tests + selectors/seams: static select and static multi using `DropifyKeys.field`, `.searchInput`, item rows, clear/select-all
-- [ ] Verify: `flutter analyze` && `flutter test`
+- [x] `pubspec.yaml` - description, Flutter lower bound after `RawMenuAnchor`/`MenuController`/`TapRegion` verification
+- [x] `lib/flutter_dropify.dart` - export real public API; remove placeholder surface
+- [x] `lib/src/dropify_item.dart` - immutable `DropifyItem<T>`, identity fallback, duplicate-visible assert helper
+- [x] `lib/src/dropify_query.dart` - raw/normalized query model
+- [x] `lib/src/dropify_controller.dart` - interaction-only open/close/toggle/search/refresh/retry contract
+- [x] `lib/src/dropify_keys.dart` - stable selector contract
+- [x] `lib/src/dropify_source.dart` - static source + filter callback types
+- [x] `lib/src/dropify_builders.dart` - public builder typedefs/state objects needed for static UI
+- [x] `lib/src/dropify_builder.dart` - RawMenuAnchor core, search, lazy list, outside tap, empty state, disabled state
+- [x] `lib/src/dropify_dropdown.dart` - `DropifyDropdown<T>` and `.multi`; controlled selection only
+- [x] `test/flutter_dropify_test.dart` - replace placeholder; package static behavior tests
+- [x] TDD: static single opens, filters, selects enabled item, calls `onChanged`, closes
+- [x] TDD: static multi toggles values, emits immutable lists, clear all, select visible, stays open
+- [x] TDD: empty/search-empty, disabled widget/row, custom filter, duplicate visible identity assert
+- [x] TDD: builder callbacks receive open/search/selected/disabled/highlight state without losing keys
+- [x] Robot journey tests + selectors/seams: static select and static multi using `DropifyKeys.field`, `.searchInput`, item rows, clear/select-all
+- [x] Verify: `flutter analyze` && `flutter test`
 
 ### Phase 2: Async Slice
 

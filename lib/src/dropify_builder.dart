@@ -1,0 +1,606 @@
+import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
+
+import 'dropify_builders.dart';
+import 'dropify_controller.dart';
+import 'dropify_item.dart';
+import 'dropify_keys.dart';
+import 'dropify_query.dart';
+import 'dropify_source.dart';
+
+/// Low-level builder-first dropdown widget used by Dropify convenience widgets.
+class DropifyBuilder<T> extends StatefulWidget {
+  /// Creates a [DropifyBuilder].
+  const DropifyBuilder({
+    super.key,
+    required this.source,
+    this.value,
+    this.values = const <Never>[],
+    this.onChanged,
+    this.onMultiChanged,
+    this.multi = false,
+    this.enabled = true,
+    this.controller,
+    this.placeholder = 'Select an option',
+    this.searchHintText = 'Search',
+    this.emptyText = 'No options found',
+    this.fieldBuilder,
+    this.searchBuilder,
+    this.itemBuilder,
+    this.selectedBuilder,
+    this.selectedItemsBuilder,
+    this.emptyBuilder,
+    this.dataBuilder,
+    this.overlayBuilder,
+    this.menuHeaderBuilder,
+    this.menuFooterBuilder,
+  });
+
+  /// Static item source for this slice.
+  final DropifySource<T> source;
+
+  /// Controlled single-select value.
+  final T? value;
+
+  /// Controlled multi-select values.
+  final List<T> values;
+
+  /// Called when the single-select value changes.
+  final ValueChanged<T?>? onChanged;
+
+  /// Called when the multi-select values change.
+  final ValueChanged<List<T>>? onMultiChanged;
+
+  /// Whether this builder is in multi-select mode.
+  final bool multi;
+
+  /// Whether the widget can be opened and selected.
+  final bool enabled;
+
+  /// Optional interaction controller.
+  final DropifyController? controller;
+
+  /// Placeholder text for the default field.
+  final String placeholder;
+
+  /// Hint text for the default search field.
+  final String searchHintText;
+
+  /// Text for the default empty state.
+  final String emptyText;
+
+  /// Custom field builder.
+  final DropifyFieldBuilder<T>? fieldBuilder;
+
+  /// Custom search builder.
+  final DropifySearchBuilder? searchBuilder;
+
+  /// Custom item row builder.
+  final DropifyItemBuilder<T>? itemBuilder;
+
+  /// Custom selected single display builder.
+  final DropifySelectedBuilder<T>? selectedBuilder;
+
+  /// Custom selected multi display builder.
+  final DropifySelectedItemsBuilder<T>? selectedItemsBuilder;
+
+  /// Custom empty state builder.
+  final DropifyEmptyBuilder? emptyBuilder;
+
+  /// Advanced data body builder.
+  final DropifyDataBuilder<T>? dataBuilder;
+
+  /// Custom overlay shell builder.
+  final DropifyOverlayBuilder? overlayBuilder;
+
+  /// Optional menu header builder.
+  final DropifyMenuBuilder? menuHeaderBuilder;
+
+  /// Optional menu footer builder.
+  final DropifyMenuBuilder? menuFooterBuilder;
+
+  @override
+  State<DropifyBuilder<T>> createState() => _DropifyBuilderState<T>();
+
+  @override
+  void debugFillProperties(DiagnosticPropertiesBuilder properties) {
+    super.debugFillProperties(properties);
+    properties.add(FlagProperty('multi', value: multi, ifTrue: 'multi'));
+    properties.add(
+      FlagProperty('enabled', value: enabled, ifFalse: 'disabled'),
+    );
+    properties.add(StringProperty('placeholder', placeholder));
+    properties.add(StringProperty('searchHintText', searchHintText));
+    properties.add(StringProperty('emptyText', emptyText));
+    properties.add(
+      ObjectFlagProperty<ValueChanged<T?>?>.has('onChanged', onChanged),
+    );
+    properties.add(
+      ObjectFlagProperty<ValueChanged<List<T>>?>.has(
+        'onMultiChanged',
+        onMultiChanged,
+      ),
+    );
+  }
+}
+
+class _DropifyBuilderState<T> extends State<DropifyBuilder<T>> {
+  late final MenuController _menuController;
+  late final TextEditingController _searchController;
+  late final FocusNode _searchFocusNode;
+  bool _isOpen = false;
+
+  bool get _canInteract {
+    final hasCallback = widget.multi
+        ? widget.onMultiChanged != null
+        : widget.onChanged != null;
+    return widget.enabled && hasCallback;
+  }
+
+  DropifyQuery get _query => DropifyQuery.fromRaw(_searchController.text);
+
+  List<DropifyItem<T>> get _visibleItems {
+    final items = widget.source.resolve(_query);
+    assert(debugAssertUniqueDropifyIdentities(items));
+    return items;
+  }
+
+  DropifyItem<T>? get _selectedItem {
+    for (final item in widget.source.items) {
+      if (item.value == widget.value) {
+        return item;
+      }
+    }
+    return null;
+  }
+
+  List<DropifyItem<T>> get _selectedItems {
+    final selected = <DropifyItem<T>>[];
+    for (final item in widget.source.items) {
+      if (widget.values.contains(item.value)) {
+        selected.add(item);
+      }
+    }
+    return List<DropifyItem<T>>.unmodifiable(selected);
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _menuController = MenuController();
+    _searchController = TextEditingController();
+    _searchFocusNode = FocusNode();
+    widget.controller?.addListener(_handleControllerCommand);
+  }
+
+  @override
+  void didUpdateWidget(covariant DropifyBuilder<T> oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.controller != widget.controller) {
+      oldWidget.controller?.removeListener(_handleControllerCommand);
+      widget.controller?.addListener(_handleControllerCommand);
+    }
+    if (!_canInteract && _isOpen) {
+      _close();
+    }
+  }
+
+  @override
+  void dispose() {
+    widget.controller?.removeListener(_handleControllerCommand);
+    _searchFocusNode.dispose();
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  void _handleControllerCommand() {
+    final command = widget.controller?.takePendingCommand();
+    switch (command) {
+      case DropifyControllerCommand.open:
+        _open();
+      case DropifyControllerCommand.close:
+        _close();
+      case DropifyControllerCommand.toggle:
+        _toggle();
+      case DropifyControllerCommand.search:
+        _setSearchText(widget.controller?.takePendingSearchText() ?? '');
+      case DropifyControllerCommand.refresh:
+      case DropifyControllerCommand.retry:
+      case null:
+        break;
+    }
+  }
+
+  void _open() {
+    if (!_canInteract) {
+      return;
+    }
+    _menuController.open();
+  }
+
+  void _close() {
+    _menuController.close();
+  }
+
+  void _toggle() {
+    if (_isOpen) {
+      _close();
+    } else {
+      _open();
+    }
+  }
+
+  void _handleOpen() {
+    setState(() {
+      _isOpen = true;
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _isOpen) {
+        _searchFocusNode.requestFocus();
+      }
+    });
+  }
+
+  void _handleClose() {
+    setState(() {
+      _isOpen = false;
+      _setSearchText('', notify: false);
+    });
+  }
+
+  void _setSearchText(String text, {bool notify = true}) {
+    if (_searchController.text == text) {
+      return;
+    }
+    _searchController.text = text;
+    _searchController.selection = TextSelection.collapsed(offset: text.length);
+    if (notify && mounted) {
+      setState(() {});
+    }
+  }
+
+  void _selectItem(DropifyItem<T> item) {
+    if (!_canInteract || !item.enabled) {
+      return;
+    }
+
+    if (widget.multi) {
+      final values = List<T>.of(widget.values);
+      if (values.contains(item.value)) {
+        values.remove(item.value);
+      } else {
+        values.add(item.value);
+      }
+      widget.onMultiChanged?.call(List<T>.unmodifiable(values));
+      return;
+    }
+
+    widget.onChanged?.call(item.value);
+    _close();
+  }
+
+  void _clearAll() {
+    if (!_canInteract || !widget.multi) {
+      return;
+    }
+    widget.onMultiChanged?.call(List<T>.unmodifiable(<T>[]));
+  }
+
+  void _selectVisible() {
+    if (!_canInteract || !widget.multi) {
+      return;
+    }
+    final values = List<T>.of(widget.values);
+    for (final item in _visibleItems) {
+      if (item.enabled && !values.contains(item.value)) {
+        values.add(item.value);
+      }
+    }
+    widget.onMultiChanged?.call(List<T>.unmodifiable(values));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return RawMenuAnchor(
+      controller: _menuController,
+      consumeOutsideTaps: false,
+      onOpen: _handleOpen,
+      onClose: _handleClose,
+      overlayBuilder: _buildOverlay,
+      builder: (context, controller, child) {
+        return KeyedSubtree(
+          key: DropifyKeys.field,
+          child: _buildField(context),
+        );
+      },
+    );
+  }
+
+  Widget _buildField(BuildContext context) {
+    final state = DropifyFieldState<T>(
+      isOpen: _isOpen,
+      isEnabled: _canInteract,
+      isMultiSelect: widget.multi,
+      query: _query,
+      selectedItem: _selectedItem,
+      selectedItems: _selectedItems,
+      open: _open,
+      close: _close,
+      toggle: _toggle,
+      clearSearch: () => _setSearchText(''),
+    );
+    final customBuilder = widget.fieldBuilder;
+    if (customBuilder != null) {
+      return GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: _canInteract ? _toggle : null,
+        child: customBuilder(context, state),
+      );
+    }
+
+    final child = widget.multi
+        ? _buildDefaultMultiSelection(context)
+        : _buildDefaultSingleSelection(context);
+    return Semantics(
+      button: true,
+      enabled: _canInteract,
+      expanded: _isOpen,
+      child: InkWell(
+        onTap: _canInteract ? _toggle : null,
+        child: InputDecorator(
+          decoration: InputDecoration(
+            enabled: _canInteract,
+            border: const OutlineInputBorder(),
+            suffixIcon: Icon(
+              _isOpen ? Icons.arrow_drop_up : Icons.arrow_drop_down,
+            ),
+          ),
+          child: child,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDefaultSingleSelection(BuildContext context) {
+    final customBuilder = widget.selectedBuilder;
+    if (customBuilder != null) {
+      return customBuilder(
+        context,
+        DropifySelectedState<T>(item: _selectedItem),
+      );
+    }
+    final item = _selectedItem;
+    return Text(item?.label ?? widget.placeholder);
+  }
+
+  Widget _buildDefaultMultiSelection(BuildContext context) {
+    final customBuilder = widget.selectedItemsBuilder;
+    final selectedItems = _selectedItems;
+    if (customBuilder != null) {
+      return customBuilder(
+        context,
+        DropifySelectedItemsState<T>(items: selectedItems),
+      );
+    }
+    if (selectedItems.isEmpty) {
+      return Text(widget.placeholder);
+    }
+    return Wrap(
+      spacing: 6,
+      runSpacing: 6,
+      children: <Widget>[
+        for (final item in selectedItems)
+          Chip(
+            key: DropifyKeys.selectedChip(item.identity),
+            label: Text(item.label),
+          ),
+      ],
+    );
+  }
+
+  Widget _buildOverlay(BuildContext context, RawMenuOverlayInfo info) {
+    final query = _query;
+    final visibleItems = _visibleItems;
+    Widget content = KeyedSubtree(
+      key: DropifyKeys.menuOverlay,
+      child: TapRegion(
+        groupId: info.tapRegionGroupId,
+        child: Material(
+          elevation: 8,
+          borderRadius: BorderRadius.circular(8),
+          clipBehavior: Clip.antiAlias,
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              minWidth: info.anchorRect.width,
+              maxWidth: info.anchorRect.width,
+              maxHeight: 320,
+            ),
+            child: _DropifyMenu<T>(
+              search: _buildSearch(context),
+              header: widget.menuHeaderBuilder?.call(context),
+              footer: widget.menuFooterBuilder?.call(context),
+              actions: widget.multi ? _buildMultiActions(context) : null,
+              body: _buildBody(context, visibleItems, query),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    final customOverlayBuilder = widget.overlayBuilder;
+    if (customOverlayBuilder != null) {
+      content = customOverlayBuilder(
+        context,
+        DropifyOverlayState(isOpen: _isOpen, query: query),
+        content,
+      );
+    }
+
+    return Positioned(
+      left: info.anchorRect.left,
+      top: info.anchorRect.bottom + 4,
+      width: info.anchorRect.width,
+      child: content,
+    );
+  }
+
+  Widget _buildSearch(BuildContext context) {
+    final state = DropifySearchState(
+      controller: _searchController,
+      focusNode: _searchFocusNode,
+      query: _query,
+      clear: () => _setSearchText(''),
+    );
+    final customBuilder = widget.searchBuilder;
+    if (customBuilder != null) {
+      return KeyedSubtree(
+        key: DropifyKeys.searchInput,
+        child: customBuilder(context, state),
+      );
+    }
+    return Padding(
+      padding: const EdgeInsets.all(8),
+      child: TextField(
+        key: DropifyKeys.searchInput,
+        controller: _searchController,
+        focusNode: _searchFocusNode,
+        decoration: InputDecoration(
+          hintText: widget.searchHintText,
+          isDense: true,
+          border: const OutlineInputBorder(),
+        ),
+        onChanged: (_) => setState(() {}),
+      ),
+    );
+  }
+
+  Widget _buildMultiActions(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 8),
+      child: Wrap(
+        spacing: 8,
+        children: <Widget>[
+          TextButton(
+            key: DropifyKeys.selectAll,
+            onPressed: _canInteract ? _selectVisible : null,
+            child: const Text('Select visible'),
+          ),
+          TextButton(
+            key: DropifyKeys.clearAll,
+            onPressed: _canInteract ? _clearAll : null,
+            child: const Text('Clear all'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildBody(
+    BuildContext context,
+    List<DropifyItem<T>> visibleItems,
+    DropifyQuery query,
+  ) {
+    final customDataBuilder = widget.dataBuilder;
+    if (customDataBuilder != null && visibleItems.isNotEmpty) {
+      return Flexible(
+        child: customDataBuilder(
+          context,
+          DropifyDataState<T>(items: visibleItems, query: query),
+        ),
+      );
+    }
+    if (visibleItems.isEmpty) {
+      final customEmptyBuilder = widget.emptyBuilder;
+      return Padding(
+        key: DropifyKeys.emptyRow,
+        padding: const EdgeInsets.all(16),
+        child:
+            customEmptyBuilder?.call(
+              context,
+              DropifyEmptyState(query: query),
+            ) ??
+            Text(widget.emptyText),
+      );
+    }
+    return Flexible(
+      child: ListView.builder(
+        shrinkWrap: true,
+        itemCount: visibleItems.length,
+        itemBuilder: (context, index) {
+          final item = visibleItems[index];
+          return KeyedSubtree(
+            key: DropifyKeys.itemRow(item.identity),
+            child: _buildItem(context, item),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildItem(BuildContext context, DropifyItem<T> item) {
+    final isSelected = widget.multi
+        ? widget.values.contains(item.value)
+        : widget.value == item.value;
+    final isDisabled = !_canInteract || !item.enabled;
+    final state = DropifyItemState<T>(
+      item: item,
+      isSelected: isSelected,
+      isHighlighted: false,
+      isDisabled: isDisabled,
+      select: () => _selectItem(item),
+    );
+    final customBuilder = widget.itemBuilder;
+    if (customBuilder != null) {
+      return Semantics(
+        selected: isSelected,
+        enabled: !isDisabled,
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: isDisabled ? null : () => _selectItem(item),
+          child: customBuilder(context, state),
+        ),
+      );
+    }
+
+    return Semantics(
+      selected: isSelected,
+      enabled: !isDisabled,
+      child: ListTile(
+        enabled: !isDisabled,
+        selected: isSelected,
+        leading: widget.multi
+            ? Checkbox(
+                value: isSelected,
+                onChanged: isDisabled ? null : (_) => _selectItem(item),
+              )
+            : null,
+        title: Text(item.label),
+        onTap: isDisabled ? null : () => _selectItem(item),
+      ),
+    );
+  }
+}
+
+class _DropifyMenu<T> extends StatelessWidget {
+  const _DropifyMenu({
+    required this.search,
+    required this.body,
+    this.header,
+    this.footer,
+    this.actions,
+  });
+
+  final Widget search;
+  final Widget body;
+  final Widget? header;
+  final Widget? footer;
+  final Widget? actions;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: <Widget>[search, ?header, ?actions, body, ?footer],
+    );
+  }
+}
